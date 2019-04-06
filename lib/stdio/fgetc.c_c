@@ -1,0 +1,27 @@
+/*
+ *	fgetc for uzi180 stdio
+ */
+	
+#include	<stdio.h>
+
+fgetc(f)
+register FILE *	f;
+{
+	int	c;
+	int	_filbuf();
+
+	if(f->_flag & _IOEOF || !(f->_flag & _IOREAD)) {
+reteof:
+		f->_flag |= _IOEOF;
+		return EOF;
+	}
+	if(f->_cnt > 0) {
+		c = (unsigned)*f->_ptr++;
+		f->_cnt--;
+	} else if(f->_flag & _IOSTRG)
+		goto reteof;
+	else
+		c = _filbuf(f);
+	return c;
+}
+

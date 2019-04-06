@@ -1,0 +1,55 @@
+;/*******************************************************************
+;*  UZI Library Module Function :  crt
+;* Minor changes from CRT.C by Stefan Nitschke
+;* Even smaller changes by Hector Peraza
+;*-------------------------------------------------------------------
+;* Header file linked before any application program for execution
+;* under UZI.  It stores the Environment pointer, Zeroes bss memory,
+;* Sets the UZI Break address to the highest memory used, then passes
+;* argc and argv on to main() and exits when main returns here.
+;* Enter: Stack prepared by UZI exec() are:
+;*   SP+4 - Ptr to Environment
+;*   SP+2 - argv (Ptr to array of vectors)
+;*   SP+0 - argc (Number of Argv vectors)
+;********************************************************************\
+	psect	text,global,pure
+	psect	data,global
+	psect	bss,global
+
+	 psect	text
+	DEFS	100H		; Base of CP/M's TPA and UZI Executables
+
+	GLOBAL	ustart				; PUBlic
+	GLOBAL	_main				; from linked program
+	GLOBAL	_exit, __brk, _environ		; Library routines
+	GLOBAL	__Lbss, __Hbss			; from Linker
+
+ustart:	JP	start0		; Provides key executable "Magic" byte to UZI
+
+	DEFM	'UZI180'	; Text tag for ID'ing executables
+
+start0:	LD	HL,__Hbss	; Highest memory used
+	PUSH	HL
+	CALL	__brk		; Set OS Break Address for Memory Alloc.
+	POP	HL		;  clr stack restoring address
+
+	LD	DE,__Lbss	;   (base of unallocated memory)
+	OR	A
+	SBC	HL,DE		; Calculate length of unallocated memory
+	LD	B,H
+	LD	C,L
+	DEC	BC		;  -1
+	LD	L,E
+	LD	H,D		;   Source (HL) to base
+	INC	DE		;    Destination is at +1
+	LD	(HL),0		;     stuff a Zero
+	LDIR			;      move it along
+
+	LD	HL,4
+	ADD	HL,SP		; Get addr of first Env element
+	LD	(_environ),HL	;  save for application
+
+	CALL	_main		; Execute: main (argc, argv)
+	PUSH	HL		;  Pass result code for Exit
+Quit:	CALL	_exit		;   (Exit Code on stack)
+	JR	Quit		;  ..if it Gets here, try exit again

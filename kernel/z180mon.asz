@@ -1,0 +1,595 @@
+; this file is included in machasm.asz if debug enabled
+
+; Simple standalone monitor for P112 board.
+; Based on YM.MAC and M580 monitor.
+
+	global	mon_start, mon_ept, trap_ept
+
+mon_start:
+	ld	sp,mon_stack
+	call	ioinit
+	ld	hl,banner
+	call	print
+mon_ept:
+	ld	sp,mon_stack
+	ld	hl,prompt
+	call	print
+	call	getln
+	ld	hl,linbfr
+	ld	a,(hl)
+	call	uc
+	ld	hl,mon_ept
+	push	hl
+	cp	CR
+	ret	z
+	push	af
+	call	get_args
+	ld	bc,(arg3)
+	ld	de,(arg2)
+	ld	hl,(arg1)
+	pop	af
+	cp	'D'
+	jp	z,dump
+	cp	'C'
+	jp	z,comp
+	cp	'F'
+	jp	z,fill
+	cp	'S'
+	jp	z,search
+	cp	'T'
+	jp	z,xfer
+	cp	'M'
+	jp	z,modif
+	cp	'G'
+	jp	z,run
+	cp	'I'
+	jp	z,inport
+	cp	'O'
+	jp	z,outport
+	cp	'X'
+	jp	z,showregs
+	cp	'N'
+	jp	z,continue
+;	cp	'R'
+;	jp	z,RLOAD
+error:	ld	a,'?'
+	call	mon_putch
+	jr	mon_ept
+
+banner:	defb	CR,LF
+	defm	'Z180 Monitor'
+	defb	CR,LF,0
+
+prompt:	defb	CR,LF,'.',0
+
+getln:	ld	hl,linbfr
+	ld	c,0
+get:	call	mon_getch
+	cp	8
+	jr	z,del
+	cp	7Fh
+	jr	z,del
+	cp	3
+	jr	z,ctrlc
+	cp	ESC
+	jr	z,ctrlc
+	call	mon_putch
+	ld	(hl),a
+	cp	CR
+	ret	z
+	ld	a,20
+	cp	c
+	jp	z,error
+	inc	hl
+	inc	c
+	jr	get
+del:	ld	a,c
+	or	a
+	jr	z,get
+	ld	a,8
+	call	mon_putch
+	ld	a,' '
+	call	mon_putch
+	ld	a,8
+	call	mon_putch
+	dec	hl
+	dec	c
+	jr	get
+ctrlc:	ld	hl,ctlcm
+	call	print
+	jp	mon_ept
+
+ctlcm:	defm	'^C'
+	defb	CR,LF,0
+
+uc:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+print:	ld	a,(hl)
+	or	a
+	ret	z
+	call	mon_putch
+	inc	hl
+	jp	print
+
+; get command line arguments
+
+get_args:
+	ld	hl,0
+	ld	(arg1),hl
+	ld	(arg2),hl
+	ld	(arg3),hl
+	ld	de,linbfr+1
+	call	gethex
+	ld	(arg1),hl
+	ld	(arg2),hl
+	ret	c
+	call	gethex
+	ld	(arg2),hl
+	ret	c
+	call	gethex
+	ld	(arg3),hl
+	ret	c
+	jp	error
+
+gethex:	ld	hl,0
+gh1:	ld	a,(de)
+	call	uc
+	inc	de
+	cp	CR
+	jp	z,aend
+	cp	','
+	ret	z
+	cp	' '
+	jr	z,gh1
+	sub	'0'
+	jp	m,error
+	cp	10
+	jp	m,dig
+	cp	11h
+	jp	m,error
+	cp	17h
+	jp	p,error
+	sub	7
+dig:	ld	c,a
+	ld	b,0
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	jp	c,error
+	add	hl,bc
+	jp	gh1
+aend:	scf
+	ret
+
+hl?de:	ld	a,h
+	cp	d
+	ret	nz
+	ld	a,l
+	cp	e
+	ret
+
+last:	call	hl?de
+	jp	z,cmp_eq
+	dec	de
+	ret
+next:	call	?stop
+next1:	call	hl?de
+	jp	z,cmp_eq
+	inc	hl
+	ret
+cmp_eq:	inc	sp
+	inc	sp
+	ret
+
+?stop:	call	mon_status
+	or	a
+	ret	z
+	call	mon_getch
+	cp	3
+	jp	z,ctrlc
+	cp	ESC
+	jp	z,ctrlc
+	cp	20h
+	jr	z,wkey
+	cp	13h	; CTRL/S
+	ret	nz
+wkey:	call	mon_getch
+	ret
+
+; T addr1,addr2,addr3
+; Transfer region addr1...addr2 to addr3,
+; source and dest regions may overlap
+
+xfer:	ld	a,l	; modify to use LDIR/LDDR
+	sub	c
+	ld	a,h
+	sbc	a,b
+	jr	nc,m_inc
+	push	de
+	ex	de,hl
+	or	a
+	sbc	hl,de
+	add	hl,bc
+	ld	c,l
+	ld	b,h
+	ex	de,hl
+	pop	de
+m_dcr:	ld	a,(de)
+	ld	(bc),a
+	dec	bc
+	call	last
+	jr	m_dcr
+m_inc:	ld	a,(hl)
+	ld	(bc),a
+	inc	bc
+	call	next1
+	jr	m_inc
+
+; D addr1,addr2
+; Dump region addr1...addr2
+
+dump:	call	out_addr
+	push	hl
+dmph:   ld	a,(hl)
+	call	outbyte
+	call	?stop
+	call	hl?de
+	jr	z,enddmp
+	inc	hl
+	ld	a,l
+	and	0Fh
+	jr	nz,dmph
+	pop	hl
+	call	dumpl
+	jr	dump
+enddmp:	pop	hl
+dumpl:  ld	a,(hl)
+	cp	20h
+	jr	c,outdot
+	cp	80h
+	jr	c,char
+outdot:	ld	a,'.'
+char:	call	mon_putch
+	call	?stop
+	call	hl?de
+	ret	z
+	inc	hl
+	ld	a,l
+	and	0Fh
+	jr	nz,dumpl
+	ret
+
+; F addr1,addr2,byte
+; Fill region addr1...addr2 with byte
+
+fill:	ld	(hl),c
+	call	next
+	jp	fill
+
+; C addr1,addr2,addr3
+; Compare region addr1...addr2 with region at addr3
+
+comp:	ld	a,(bc)
+	cp	(hl)
+	jr	z,same
+	call	out_addr
+	ld	a,(hl)
+	call	outbyte
+	ld	a,(bc)
+	call	outbyte
+same:	inc	bc
+	call	next
+	jr	comp
+
+; S addr1,addr2,byte
+; Search region addr1...addr2 for byte
+
+search:	ld	a,c
+	cp	(hl)
+	jr	nz,scont
+	call	out_addr
+	dec	hl
+	ld	a,(hl)
+	call	outbyte
+	ld	a,'('
+	call	mon_putch
+	inc	hl
+	ld	a,(hl)
+	call	ahex
+	ld	a,')'
+	call	mon_putch
+	ld	a,' '
+	call	mon_putch
+	inc	hl
+	ld	a,(hl)
+	call	outbyte
+	dec	hl
+scont:	call	next
+	jr	search
+
+; M addr
+; Modify memory starting at addr
+
+modif:	call	out_addr
+	ld	a,(hl)
+	call	outbyte
+	push	hl
+	call	getln
+	pop	hl
+	ld	de,linbfr
+	ld	a,(de)
+	cp	CR
+	jp	z,cont
+	push	hl
+	call	gethex
+	ld	a,l
+	pop	hl
+	ld	(hl),a
+cont:	inc	hl
+	jr	modif
+
+; I port
+; Input from port
+
+inport:	call	crlf
+	ld	a,l
+	call	ahex
+	ld	a,'='
+	call	mon_putch
+	ld	c,l
+	ld	b,h		; or ld b,0
+	in	a,(c)
+	call	ahex
+	ret
+
+; O port,byte
+; Output to port
+
+outport:ld	c,l
+	ld	b,h		; or ld b,0
+	ld	a,e
+	out	(c),a
+	ret
+
+; G addr
+; Go (execute) program at addr. Progam may use return 
+; instruction to return to monitor
+
+run:	call	r1
+	ret
+r1:	jp	(hl)
+
+out_addr:
+	call	crlf
+	call	hlhex
+	ld	a,':'
+	call	mon_putch
+	ld	a,' '
+	jp	mon_putch
+
+outbyte:
+	call	ahex
+	ld	a,' '
+	jp	mon_putch
+
+hlhex:	ld	a,h
+	call	ahex
+	ld	a,l
+ahex:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	ah1
+	pop	af
+ah1:	and	0Fh
+	cp	10
+	jr	c,ah2
+	add	a,7
+ah2:	add	a,'0'
+	jp	mon_putch
+
+crlf:	push	af
+	ld	a,CR
+	call	mon_putch
+	ld	a,LF
+	call	mon_putch
+	pop	af
+	ret
+
+; should save the current MMU status as well
+
+trap_ept:
+	ld	(pgm_sp),sp
+	ld	sp,reg_stack
+	ex	af,af'
+	push	af
+	ex	af,af'
+	exx	
+	push	bc
+	push	de
+	push	hl
+	exx
+	push	af
+	push	bc
+	push	de
+	push	hl
+	push	ix
+	push	iy
+	ld	sp,mon_stack
+	ld	hl,(pgm_sp)
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	(pgm_pc),de
+	ld	hl,brk_msg
+	in0	a,(ITC)
+	ld	b,a
+	and	80h		; TRAP bit set?
+	jr	z,no_trap
+	dec	de		; PC-1
+	ld	a,b
+	and	40h		; UFO bit set?
+	jr	z,no_ufo_adj
+	dec	de		; PC-2 if UFO was set
+no_ufo_adj:
+	ld	hl,trap_msg
+no_trap:
+	call	crlf
+	call	print
+	ld	hl,atpc_msg
+	call	print
+	ex	de,hl
+	call	hlhex
+	call	crlf
+	jp	mon_ept
+
+trap_msg:
+	defm	'Illegal instruction trap'
+	defb	0
+brk_msg:
+	defm	'Break'
+	defb	0
+atpc_msg:
+	defm	' at PC='
+	defb	0
+
+; N
+; coNtinue execution from the last break
+
+continue:
+	ld	sp,pgm_iy
+	pop	iy
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	exx
+	pop	hl
+	pop	de
+	pop	bc
+	exx
+	ex	af,af'
+	pop	af
+	ex	af,af'
+	ld	sp,(pgm_sp)
+	ret
+
+; X
+; show the contents of the CPU registers
+
+showregs:
+	ld	hl,regdmp
+showr1:	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	a,d
+	or	e
+	ret	z
+	ex	de,hl
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	push	bc
+	ex	de,hl
+	call	print
+	ex	(sp),hl
+	call	hlhex
+	pop	hl
+	inc	hl
+	jr	showr1
+
+regdmp:	defw	pgm_af
+	defb	CR,LF
+	defm	'AF='
+	defb	0
+	defw	pgm_bc
+	defm	' BC='
+	defb	0
+	defw	pgm_de
+	defm	' DE='
+	defb	0
+	defw	pgm_hl
+	defm	' HL='
+	defb	0
+	defw	pgm_ix
+	defm	' IX='
+	defb	0
+	defw	pgm_iy
+	defm	' IY='
+	defb	0
+	defw	pgm_af1
+	defb	CR,LF
+	defm	'AF'
+	defb	27h,0
+	defw	pgm_bc1
+	defm	' BC'
+	defb	27h,0
+	defw	pgm_de1
+	defm	' DE'
+	defb	27h,0
+	defw	pgm_hl1
+	defm	' HL'
+	defb	27h,0
+	defw	pgm_pc
+	defm	' PC='
+	defb	0
+	defw	pgm_sp
+	defm	' SP='
+	defb	0
+	defw	0
+
+ioinit:	ret
+
+mon_getch:
+	call	mon_status
+	or	a
+	jr	z,mon_getch
+	in0	a,(SCCAD)
+	and	7Fh
+	ret
+
+mon_putch:
+	push	af
+wait:	in0	a,(SCCACNT)
+	bit	2,a
+	jr	z,wait
+	pop	af
+	out0	(SCCAD),a
+	ret
+
+mon_status:
+	in0	a,(SCCACNT)
+	rra
+	sbc	a,a		; return FF if ready, 0 otherwise
+	ret
+
+arg1:	defs	2
+arg2:	defs	2
+arg3:	defs	2
+linbfr:	defs	21
+
+pgm_iy:	defs	2
+pgm_ix:	defs	2
+pgm_hl:	defs	2
+pgm_de:	defs	2
+pgm_bc:	defs	2
+pgm_af:	defs	2
+pgm_hl1:defs	2
+pgm_de1:defs	2
+pgm_bc1:defs	2
+pgm_af1:defs	2
+reg_stack equ	$
+pgm_sp:	defs	2
+pgm_pc:	defs	2
+
+	defs	100
+mon_stack:

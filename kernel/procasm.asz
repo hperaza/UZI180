@@ -1,0 +1,429 @@
+;/***************************************************************
+;   UZI (Unix Z80 Implementation) Kernel:  procasm.asz
+;----------------------------------------------------------------
+; Adapted from UZI By Doug Braun, and UZI280 by Stefan Nitschke
+;            Copyright (C) 1998 by Harold F. Bower
+;       Portions Copyright (C) 1995 by Stefan Nitschke
+;****************************************************************/
+;/* Revisions:
+; */
+
+; #include <unix.h>
+; #include <config.h>
+; #include <extern.h>
+
+
+	global	_swapout, _swapin, _dofork, _newid		; PUBlic
+
+	global	_chksigs, _ptab_alloc, _getproc, _newproc	; in process.c
+	global	_panic						; in machdep.c
+	global	_tempstack, _ei, _osBank			; in machasm.asz
+	global	_ub, _runticks					; in data.c
+
+*Include   ASMDEF.I
+*Include   Z180.I
+
+	  psect  bss
+F199:	 defs	2	; static ptptr newp (swapout)
+F207:	 defs	2	; static ptptr newp (swapin)
+F218:	 defs	2	; static ptptr p (dofork)
+	; /* Temp storage for dofork */
+_newid:	 defs	2	; int16 newid;
+	  psect  text
+
+;---------------------------------------------------------------
+; /* Swapout swaps out the current process, finds another that is READY,
+;  * possibly the same process, and swaps it in.  When a process is
+;  * restarted after calling swapout, it thinks it has just returned
+;  * from swapout().
+;  */
+; /* This function can have no arguments or auto variables */
+
+; swapout()
+; {
+
+_swapout:
+	DI			; Don't allow Ints while we do this
+
+;     static ptptr newp;
+;     ptptr getproc();
+
+;     /* See if any signals are pending */
+;     chksigs();
+
+	call	_chksigs
+
+;     /* Save the stack pointer and critical registers */
+;     /*  Returns 1 if swapped */
+; #asm
+
+L19:	ld	hl,01		; This will return 1 if swapped
+	push	hl		;  will be return value
+	push	ix
+	push	iy
+
+; #endasm
+;     udata.u_sp = stkptr;
+
+	ld	(_ub+OSP),sp
+
+; Write the User Data Block to storage in the respective Memory Bank
+; UZI180 - replaces "swrite();" with "uput (0xf000, 0xf000, 768);"
+;     swrite();
+;	call	_swrite
+
+	LD	HL,768		; Save all of ub, KStack and IStack
+	LD	(dmaLen),HL	;  Length
+	LD	BC,0F000H	;   Start Address in both Src and Dst
+	LD	A,(_osBank)
+	LD	E,A		;    Source Bank is Common1
+	LD	HL,(_ub+OPAGE)	;     Dest Bank if that of Current Process
+	CALL	MovDMA		; Save Common:udata to User:udata!
+
+;	inint = 0;
+	global	_inint
+	ld	hl,0
+	ld	(_inint),hl
+
+;     /* Get a new process */
+;     newp = getproc();
+
+	call	_getproc
+;	ld	(F199),hl
+
+;     /* Read the new process in, and return into its context. */
+;     swapin (newp);
+
+;	ld	hl,(F199)
+	push	hl
+	call	_swapin
+
+
+;     /* We should never get here. */
+;     panic ("swapin failed");
+
+	ld	hl,msg19
+	ex	(sp),hl
+	call	_panic
+	pop	bc
+	ret
+; }
+
+
+;---------------------------------------------------------------
+; /* No automatics can be used past tempstack();
+;  */
+; swapin (pp)
+; ptptr pp;
+; {
+
+_swapin:
+
+;     static blkno_t blk;
+;     static ptptr newp;
+
+;     di();
+
+	DI			; No Ints while we work here
+
+	pop	de		; Ret Addr
+	pop	hl		;  newp
+	push	hl
+	push	de
+	ld	(F207),hl	; local newp
+
+;     /* See if process has ignored signals.  If not ignored 0CH,
+;      * increase process priority (maybe an interactive task)
+;      */
+;     if (newp->p_ignored != 0xC)
+
+	ld	de,0CH
+	ld	iy,(F207)
+	ld	l,(iy+20)
+	ld	h,(iy+21)
+	or	a
+	sbc	hl,de
+	JR	z,L1
+
+;         newp->p_priority = MAXINTER;
+
+	ld	(iy+16),5
+	JR	L22
+
+;     else
+;         newp->p_priority = MAXBACK2;
+
+L1:	ld	(iy+16),2
+
+;     tempstack();
+
+L22:	ld	(iy+17),0
+	call	_tempstack
+
+;     /* Reload the user area */
+; UZI180 - User Data Area restored from Banked memory, and User Bank restored
+; to context at exit.  This replaces the reads/writes to/from swap device.
+
+;     swapread (SWAPDEV, blk, 512, ((char *)(&udata+1))-512 );
+
+;     /* The user address space is read in two i/o operations,
+;      * one from 0x100 to the break, and then from the stack up.
+;      * Notice that this might also include part or all of the
+;      * user data, but never anything above it.
+;      */
+;     swapread (SWAPDEV,
+;               blk+1,
+;               (((char *)(&udata+1))-PROGBASE) & ~511,
+;               PROGBASE);
+
+;     udata.u_page = newp->p_page;	/* Set u_page so uget works */
+
+	LD	IY,(F207)
+	LD	A,(IY+14)
+	ld	(_ub+OPAGE),a
+
+;    uget (0xf000, 0xf000, 768);
+
+	LD	HL,768		; Get all of ub, KStack and IStack
+	LD	(dmaLen),HL	;  Length
+	LD	BC,0F000H	;   Start Address in both Src and Dst
+	LD	A,(_ub+OPAGE)
+	LD	E,A		;    Source Bank is that of Current Process
+	LD	HL,(_osBank)	;     Dest Bank is Common1
+	CALL	MovDMA		; Move User:ubase to Common:ubase
+
+;     if (newp != udata.u_ptab)
+
+	ld	de,(F207)
+	ld	hl,(_ub)
+	or	a
+	sbc	hl,de
+	JR	z,L23
+
+;         panic ("mangled swapin");
+
+	ld	hl,msg29
+	push	hl
+	call	_panic
+	pop	bc
+
+;     di();
+
+L23:	DI
+
+;     newp->p_status = P_RUNNING;
+
+	EX	DE,HL
+	ld	(hl),1
+
+;     runticks = 0;
+
+	ld	hl,0
+	ld	(_runticks),hl
+
+;     /* Restore the registers */
+;     stkptr = udata.u_sp;
+
+	ld	sp,(_ub+OSP)
+
+; #asm
+	pop	iy
+	pop	ix
+	pop	hl
+	JP	_ei		; ..Exit, possibly enabling Ints
+
+; #endasm          /* return into the context of the swapped-in process */
+; }
+
+;---------------------------------------------------------------
+; /* Dofork implements forking.
+;  * This function can have no arguments or auto variables.
+;  */
+; dofork()
+; {
+
+_dofork:
+
+;     static ptptr p;
+;     ptptr ptab_alloc();
+
+;     ifnot (p = ptab_alloc())
+
+	call	_ptab_alloc
+	ld	(F218),hl
+	ld	a,l
+	or	h
+	JR	nz,L26
+
+;     {
+;         udata.u_error = EAGAIN;
+
+	ld	hl,11
+	ld	(_ub+OERR),hl
+
+;         return(-1);
+
+	ld	hl,-1
+	ret
+
+;     }
+;     di();
+
+L26:	DI
+
+;     udata.u_ptab->p_status = P_READY;     /* Parent is READY */
+
+	ld	hl,(_ub)
+	ld	(hl),2
+
+;     newid = p->p_pid;
+
+	ld	HL,(F218)
+	INC	HL
+	INC	HL
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A
+	ld	(_newid),hl
+
+;     /* Save the stack pointer and critical registers.
+;      * When the process is swapped back in, it will be as if
+;      * it returns with the value of the childs pid.
+;      */
+; #asm
+	push	hl		; HL still has _newid from above
+	push	ix
+	push	iy
+; #endasm
+
+;     udata.u_sp = stkptr;
+
+	ld	(_ub+OSP),sp
+
+;     uput (0xf000, 0xf000, 768);	/* in lieu of call to swrite() */
+
+	LD	HL,768		; Save all of ub, KStack and IStack
+	LD	(dmaLen),HL	;  Length
+	LD	BC,0F000H	;   Start Address in both Src and Dst
+	LD	A,(_osBank)
+	LD	E,A		;    Source Bank is Common1
+	LD	HL,(_ub+OPAGE)	;     Dest Bank if that of Current Process
+	CALL	MovDMA		; Save Common:ubase to User:ubase!
+
+; #asm
+	pop	hl		; reg set flag not needed
+	pop	hl		; repair stack pointer
+	pop	hl
+; #endasm
+
+	LD	A,(_ub+OPAGE)	; Get Parent's Page
+	PUSH	AF		;   save for execve use
+
+;     /* Make a new process table entry, etc. */
+;     newproc (p);
+
+	ld	hl,(F218)
+	push	hl
+	call	_newproc
+	pop	bc
+
+;     di();
+
+	DI			; (in case newproc enabled ints)
+
+;     runticks = 0;
+
+	ld	hl,0
+	ld	(_runticks),hl
+
+;     p->p_status = P_RUNNING;
+
+	ld	hl,(F218)
+	ld	(hl),1
+
+;     /* Added for correct execve() operation */
+;     p->p_fork_inf = Parent_udata.u_page;      /* Mark with Parent's Page # */
+
+	LD	DE,26		; Offset to p_fork_inf
+	ADD	HL,DE
+	POP	AF		; Restore Parent's Page #
+	LD	(HL),A		;  save
+	INC	HL
+	LD	(HL),0		;   as Integer
+
+; Copy entire 60k process into Child's address space
+
+	LD	E,A		; Source Bank is Parent's Bank (E)
+	LD	HL,0F000H
+	LD	(dmaLen),HL	;  Length to move is 60k
+	LD	C,L
+	LD	B,L		;   Addr in both starts at 0000H
+	LD	HL,(_ub+OPAGE)	;    Dest is Child's Bank (L)
+
+	CALL	MovDMA		; Copy Parent's data to Child's Space
+
+;     ei();
+
+	call	_ei
+
+;     return (0);                 /* Return to child */
+
+	ld	hl,0
+; }
+	ret
+
+
+;================================================================
+; Tailored generic DMA Move routine for Process Swaps used instead
+; of calls to _uget and _uput to avoid all C-Procedure overhead.
+; This code uses direct register setup for DMA Channel 0 instead
+; of setting a data block and using the OTIMR block output instruc-
+; tion.  This code is six bytes longer, but 74 T-states faster.
+; Enter: Length to move in variable dmaLen
+;	  L = Destination Bank #
+;	  E = Source Bank #
+;	 BC = Start/Destination Address in Banks
+; Exit : None
+; Uses : AF,BC,DE,HL
+
+MovDMA:	OUT0	(SAR0L),C	; LSB Source Addr
+	OUT0	(DAR0L),C	;  LSB Dest Addr
+	LD	C,B		; Shuffle to deal with high 16-bits
+	XOR	A
+	LD	H,A		; Expand Dest Bank
+	LD	D,A		;  Source Bank
+	LD	B,A		;   and Addr to 16-bits
+	ADD	HL,HL		; Dest Bank #
+	ADD	HL,HL		;  * 16
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,BC		;   + Hi 8-bits of Addr
+	OUT0	(DAR0L+1),L	;    Set Dest middle Byte
+	OUT0	(DAR0B),H	;     and Dest Bank
+	EX	DE,HL		; Place Source Bank for work
+	ADD	HL,HL		; Source Bank #
+	ADD	HL,HL		;  * 16
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,BC		;   + Hi 8-bits of Addr
+	OUT0	(SAR0L+1),L	;    Set Source middle Byte
+	OUT0	(SAR0B),H	;     and Source Bank
+	LD	HL,(dmaLen)	; Get Length of move
+	OUT0	(BCR0L),L	;  Set Low
+	OUT0	(BCR0H),H	;   Set High
+	LD	A,00000010B	; Set DMA Mode control to Burst Mode
+	OUT0	(DMODE),A
+	LD	A,40H		; Enable DMA0
+	OUT0	(DSTAT),A	;   move the block
+	RET			;     done.
+
+;----------------------------------------------------------------
+	 psect	data
+msg19:	DEFM	'swapin failed'
+	DEFB	0
+msg29:	DEFM	'mangled swapin'
+	DEFB	0
+
+	 psect  bss
+dmaLen:	DEFS	2		; Length of DMA Move

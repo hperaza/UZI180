@@ -1,0 +1,716 @@
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+; D-X Designs Pty Ltd P112 Floppy disk Routines (Utility Ver)
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+	global	_fdInit, _dTbl, _FdcCk			; PUBlic
+	global	_fdread0, _fdwrite0			;   "
+	global	_ftrack, _fsector, _ferror, _fbuf	;   "
+
+;;==	global	_ub					; in data.c
+	global	_ei					; in machasm.asz
+
+SPEED	EQU	18		; Set to CPU Speed in MHz (for delay timer)
+
+;;==OSYS	EQU	2		; Index into ub to insys flag
+	 psect text
+;------------------------------------------------------------
+; 28 May 1998 - Initial Version				HFB
+;------------------------------------------------------------
+; This module uses Polled IO with the built-in SMC 37C665
+; controller chip.  If your system uses Interrupts, place the
+; Interrupt handler in high memory within the COMMON base in
+; MACHASM, and declare the label GLOBAL.
+;------------------------------------------------------------
+; DESIGN NOTES:
+;   This module assumes that only MFM recorded disks will be
+; used.  Consequently, Single-Density is not supported although
+; it could easily be added.  Also, only sector sizes of 512 and
+; 1024 bytes are accomodated to minimize deblocking code and
+; further simplify the module.
+;   Formats and drive parameters are coded in a table, one for
+; each drive attached to the system.  They may be accessed and
+; changed by the ioctl function for the desired device, just as
+; TTY terminal characteristics.
+;-------------------------------------------------------------
+; Floppy Units are accessed on the P112 using the on-board SMC FDC37C665.
+; An optional assembly flag controls whether Polled or DMA-controlled IO is
+; used in operation.  The DMA mode does not use any Interrupts in this
+; preliminary version, but instead polls the INT1* line as Bit 6 on Port C
+; of the Z182.
+; This software uses the following registers:
+
+;    0DE	- Port C, Bit 6=INT1*, Bit 7=INT2*	(DRC)
+
+;    090	- Configuration Control Port	(CFCNTL)
+;    091	- Configuration Data Port	(CFDATA)
+
+; The Chip configuration must be altered only to change the polarity on the
+; Density signal applied to Pin 2 on the Floppy Connectors.  The code in this
+; module forces this lead Hi/Lo as required for different formats using two
+; bits of Configuration Register #5.  Code to perform an alternate (shorter)
+; is Commented out due to current difficulties in formatting 250 kbps disks
+; in a 3.5" drive (3.5"HD and both formats in 5.25" format correctly).  This
+; alternate code is commented out and may be explicitly changed by exchanging
+; the comment lines in subroutine STSIZE marked with ";;" and ";-".
+
+CR5	EQU	5		; FDC/IDE setups
+	;Bit 7 6 5 4 3 2 1 0
+	;    | | | | | +-+-+-  unused
+	;    | | | +-+------- 00 = Density Normal (tracks Data Rate)
+	;    | | |	      01 = (reserved), 10 = Force "1", 11 = Force "0"
+	;    +-+-+-----------  unused
+
+;    092	- Drive Control Register	(Write Only)
+;	7 6 5 4 3 2 1 0
+;	| | | | | | +-+-- Drive (00=0, 01=1, 10=2, 11=3)
+;	| | | | | +------ 1 = Normal Opn, 0 = Reset Controller
+;	| | | | +-------- 1 = Enable DMA Pins, 0 = Disable DRQ,DAK,INT pins
+;	| | | +---------- 1 = Enable Drive 0 Motor
+;	| | +------------ 1 = Enable Drive 1 Motor
+;	| +-------------- 1 = Enable Drive 2 Motor
+;	+---------------- 1 = Enable Drive 3 Motor
+;    093	-  (Not Used)
+;    094	- Data-Rate Select (Write) / Main Status Register (Read)
+;	7 6 5 4 3 2 1 0				(Write)
+
+;	7 6 5 4 3 2 1 0				(Read)
+;	| | | | +-+-+-+-- Drives Seeking (0=B0 Set, 1=B1 Set,.. 3=B3 Set)
+;	| | | +---------- 1 = Command In Progress, 0 = Command Ended
+;	| | +------------ 1 = Non-DMA Execution,   0 = DMA Execution
+;	| +-------------- 1 = Read,		   0 = Write
+;	+---------------- 1 = Request for Master,  0 = Internal Execution
+;
+;    095	- Data/Command Register		(Read/Write)
+;				(Byte Writes/Reads)
+;    096	-  (Not Used)
+;    097	- Data Rate Register (Write) / Disk Changed Bit (Read)
+;	7 6 5 4 3 2 1 0				(Write)
+;	| | | | | | +-+-- 00=500 kb/s, RPM/LC Hi, 01=250/300 kb/s (RPM/LC Lo)
+;	| | | | | |	  10=250 kb/s, RPM/LC Lo, 11=1000 kb/s (RPM/LC Hi/Lo)
+;	+-+-+-+-+-+------  (Not Used)
+;
+;	7 6 5 4 3 2 1 0				(Read)
+;	| +-+-+-+-+-+-+-- (Tri-State, used for HD Controller)
+;	+---------------- 1 = Disk Changed  (latched complement of DSKCHG inp)
+;
+;    0A0	- DMA I/O Select Port (DMA configuration Only)
+;-------------------------------------------------------------
+FDCBAS	EQU	90H		; SMC 37C665 Controller Base Address
+DCR	EQU	FDCBAS+2	; Drive Control Register
+MSR	EQU	FDCBAS+4	; Main Status Register
+DR	EQU	FDCBAS+5	; Data Register
+DRR	EQU	FDCBAS+7	; Data Rate Register/Disk Changed Bit in B7
+
+MONTIM	EQU	10*20		; Motor On time (Seconds * TICKSPERSEC)
+
+; Offsets in Drive Data Table (defined at end of this module)
+oFLG	EQU	0		; 0 = Not Logged, 1 = Drive Logged
+oPRM1	EQU	1		; Step Rate (B7-4), HUT (3-0)
+oPRM2	EQU	2		; Hd Load in 4mS steps (0=infinite)
+oGAP3	EQU	3		; Gap 3 Length for Read
+oSPT	EQU	4		; Sectors-per-Track
+oSEC1	EQU	5		; First Sector Number
+oFMT	EQU	6		; Bit-mapped Format byte
+oSPIN	EQU	7		; Spinup delay (1/20-secs)
+oTRK	EQU	8		; Current Head Position (Track)
+
+;-------------------------------------------------------------
+; Determine if the controller exists and a drive is attached
+;	fdInit (int minor);
+; Enter: Drive Minor # is on Stack
+; Exit : HL = 0 if All is Ok, Non-Zero if Error
+
+_fdInit:
+;;==	LD	A,(_ub+OSYS)	; Get Current System Flag
+;;==	LD	(sysSav),A	;  (save)
+;;==	LD	A,1		;   Indicate we are in System Mode
+;;==	LD	(_ub+OSYS),A
+
+	xor	a
+	ld	(motim),a	; Mark Motors as initially OFF
+
+	POP	HL		; Return Addr
+	POP	BC		;  minor
+	PUSH	BC		;   Keep on Stack for Exit
+	PUSH	HL
+	LD	A,C
+	LD	(drive),A	; Save Desired Device
+	CP	4		; Legal?
+	JR	NC,NoDrv	; ..Exit if Error
+	CALL	ActivA		; Else force Reset (B2=0)
+	LD	B,0
+	DJNZ	$		;    (settle)
+	CALL	Activ8		;  then bring out of Reset
+	DJNZ	$		;    (settle, B already =0)
+	IN	A,(MSR)
+	CP	80H		; Do we have correct Ready Status?
+	JR	NZ,NoDrv	; ..exit Error if Not
+
+	LD	A,(drive)
+	CALL	GetPrm		; Pt to this drive's table entry
+	PUSH	HL
+	POP	IY
+	LD	(IY+oFLG),0	; Insure drive is Unlogged
+	CALL	Spec		; Set Controller Params
+	JR	C,NoDrv		; ..Error if TimeOut, Else..
+	CALL	Recal		; Recalibrate (home) Drive
+	JR	NZ,NoDrv	; ..Error if it failed
+	LD	(IY+oFLG),01H	;  Mark Drive as Active
+	LD	HL,0		; Load Ok Status
+fdIEx:
+;;==	LD	A,(sysSav)	; Get Entry Insys Flag
+;;==	LD	(_ub+OSYS),A	;  Restore
+	RET
+
+NoDrv:	LD	HL,-1		; Set Error Status
+	JR	fdIEx		; ..Exit
+
+;-------------------------------------------------------------
+; This routine Reads/Writes data from buffer trying up to 4 times
+; before giving up.  If an error occurs after the next-to-last
+; try, the heads are homed to force a re-seek.
+;
+; Enter: None.  Entry Point sets Read/Write Flag
+; Exit :  A = 0, Zero Set if Ok, A <> 0, Zero Reset if Errors
+; Uses : AF,HL
+
+_fdread0:
+	LD	A,1
+	DEFB	21H	;..Trash HL, fall thru..
+_fdwrite0:
+	LD	A,0
+	LD	(rdOp),A
+
+;;==	LD	A,(_ub+OSYS)	; Get Current System Flag
+;;==	LD	(sysSav),A	;  (save)
+;;==	LD	A,1		;   Indicate we are in System Mode
+;;==	LD	(_ub+OSYS),A
+
+	CALL	Setup		; Set up subsystem
+;;--	LD	HL,buffer	;  Point to the host buffer
+;;--	LD	(actDma),HL	;   and set Memory Pointer
+
+	LD	A,4		; Get the maximum retry count
+Rwf1:	LD	(rwRtry),A
+	LD	D,0FFH		;  (Verify needed)
+	CALL	SEEK		; Try to seek to the desired track
+	JR	NZ,Rwf2		; ..jump if No Good
+
+	LD	A,(rdOp)
+	OR	A		; Read operation?
+	JR	Z,SWrite	; No, must be Write
+
+	LD	A,06H		; Load DP8473 Read Command
+	DEFB	21H		;   Trash HL w/load of write comnd
+SWrite:	LD	A,05H		; Load DP8473 Write Command
+	OR	01000000B	;  Set MFM Mode Bit
+	PUSH	BC		;   Save Regs
+	LD	C,A		;  Save
+	LD	B,9		; Read/Write Comnds are 9 bytes
+
+	LD	A,(eot)		; Get Last Sctr #
+	PUSH	AF		;  (save for Exit)
+	LD	A,(sect)	; Get Desired Sector #
+	LD	(eot),A		;  make last to Read only one Sector
+
+;;--	LD	HL,(actDma)	; Get actual DMA Addr
+	ld	hl,(_fbuf)	;;--
+	CALL	FdCmd		; Execute Read/Write
+
+	POP	AF		; Restore Last Sctr #
+	LD	(eot),A		;  to Comnd Blk
+
+	LD	A,(st1)		; Get Status Reg 1
+	AND	34H		; Return Any Error Bits
+	POP	BC		; Restore Regs
+	LD	(_ferror),A	;  (store Error bits)
+	JR	Z,FhdrX		; ..jump to return if No Errors
+
+Rwf2:	LD	A,(rwRtry)	; Get retry count
+	CP	2		; Are we on Next to last try?
+	CALL	Z,Recal		;  Return to Track 0 if so
+	LD	A,(rwRtry)	;   and re-fetch try count
+	DEC	A		; Do we have more retries left?
+	JR	NZ,Rwf1		; ..jump to try again if more tries remain
+
+	OR	0FFH		; Else show Error
+FhdrX:	PUSH	AF		; Save Status
+;;==	LD	A,(sysSav)
+;;==	LD	(_ub+OSYS),A	;  Reset Insys flag to entry
+;;==	CALL	_ei		;   reset Ints to desired state
+	POP	AF		; Get return status back
+	RET			;   and Exit
+
+;-------------------------------------------------------------
+; SPEC - Do a Specify Command, setting Step Rate and Head
+;  Load/Unload Time.  Settings require tailoring to Drive.
+;
+; Enter: IY -> Drive Table entry for current drive
+; Exit : Nothing
+; Uses : AF,BC
+
+Spec:	CALL	WRdyT		; Wait for RQM (hope DIO is Low!), Disable Ints
+	RET	C		; ..Error if Timed Out
+	LD	A,03H		; Do an FDC Specify Command
+	OUT	(DR),A
+
+	CALL	WRdyT
+	RET	C		; ..Error if Timed Out
+	LD	A,(IY+oPRM1)	;  first Rate Byte (Step Rate, HUT)
+	OUT	(DR),A
+
+	CALL	WRdyT
+	RET	C		; ..Error if Timed Out
+	LD	A,(IY+oPRM2)	; Get Head Load Time
+	ADD	A,A		;  Shift value left (doubles count)
+	INC	A		;   Set LSB for Non-DMA Operation
+	OUT	(DR),A
+;;;==	CALL	_ei		; Re-enable Ints if Not Insys
+	XOR	A		;  Return Ok Flag
+	RET
+
+;-------------------------------------------------------------
+; RECAL  Recalibrate Current "drive" (moves heads to track 0).
+; Enter	: IY -> Current Drive Table Entry
+;	  Variable "drive" set to desired floppy unit
+; Return:  A = 0 if Ok, NZ if Error.  Flags reflect A
+; Uses	: AF		All other Registers Preserved/Not Affected
+;
+; NOTE: BC Must be preserved by this routine.
+
+Recal:	LD	A,(drive)	; Place drive
+	LD	(hdr),A		;   in Command Block
+	LD	A,3		; Give this 3 chances to Home
+Recal1:	LD	(retrys),A
+	PUSH	BC		; Save needed regs
+	LD	BC,2*256+07H	;   (2-byte Recalibrate Comnd = 07H)
+	CALL	FdCmd		;  execute Recalibrate
+	CALL	FdcDn		; Clear Pending Ints, Wait for Seek Complete
+	POP	BC		;   (restore regs)
+	AND	00010000B	; Homed?  (B4=1 if No Trk0 found)
+	JR	Z,RecOk		; ..jump to Store if Ok
+	LD	A,(retrys)
+	DEC	A		; Any trys left?
+	JR	NZ,Recal1	; ..loop if So
+	DEC	A		; Else set Error Flag (0-->FF)
+	RET
+
+RecOk:	XOR	A		; Get a Zero (track / flag)
+	LD	(IY+oTRK),A	;  Set in Table
+	RET			;   and return
+
+;-------------------------------------------------------------
+; READID - Read the first Valid Address Mark on a track.
+;
+; Enter : "hdr" byte set in Command Blk
+; Return:  A = 0 if Ok, NZ if Error.  Flags reflect A
+; Uses	: AF		All other Registers Preserved/Not Affected
+
+ReadID:	LD	A,01001010B	; Load ReadID Command + MFM Mode byte
+	;	  ||||++++- 0AH = ReadID Command
+	;	  ||++-----  (unused)
+	;	  |+------- 1 = MFM Mode, 0 = FM Mode
+	;	  +--------  (unused)
+	PUSH	BC		; Save regs
+	LD	B,2		;  two bytes in ReadID Command
+	LD	C,A		;   move Command to C
+	CALL	FdCmd		; Activate DP8473 FDC
+
+	LD	A,(st1)		; Get Status Reg 1
+	AND	25H		;  Return Any Error Bits
+	POP	BC		;   Restore regs
+	RET			;  ..and quit
+
+;-------------------------------------------------------------
+; SETUP - Set parameters necessary to Read/Write from Active Drive
+; Enter: Variable "drive" set to current Drive (0..3)
+;	 Variables _ftrack and _fsector set to desired block address
+; Exit : IY -> Drive's Table entry
+; Uses : AF,BC,HL
+
+Setup:	LD	A,(drive)
+	PUSH	AF
+	CALL	GetPrm		; Pt to Current Drive's Table
+	PUSH	HL
+	POP	IY
+	POP	BC
+	LD	A,(active)	; Get current Activation Byte
+	AND	11110000B	;  keep only motors
+	OR	B		;   add drive bits
+	CALL	Activ8		;    save new byte and activate FDC
+	LD	A,(_ftrack)	; Get Host Track #
+	SRL	A		;  Div by 2 (LSB to Carry)
+	LD	(trk),A		;   Physical Track # to Comnd Blk
+	LD	A,0
+	ADC	A,A		; LSB becomes Head #
+	LD	(hd),A		;  save in Comnd Blk
+	ADD	A,A
+	ADD	A,A		; Shift to B3
+	LD	HL,drive
+	OR	(HL)		;  add Drive bits
+	LD	(hdr),A		;   Save in Comnd Blk
+	LD	A,(IY+oGAP3)
+	LD	(gpl),A		; Set Gap3 Length
+	LD	A,(IY+oSPT)
+	LD	(eot),A		;  Final Sector # on Trk
+	LD	A,(IY+oFMT)
+	AND	0011B		; B0/1 of Format byte is Sector Size
+	LD	(rsz),A		;  save in Comnd Blk
+	LD	A,0FFH
+	LD	(dtl),A		;   Set Data Length code
+	LD	A,(_fsector)
+	ADD	A,(IY+oSEC1)	;    Offset Sector # (base 0) by 1st Sector #
+	LD	(sect),A	;     set in Comnd Blk
+
+	BIT	7,(IY+oFMT)	; Hi (500 kbps) Speed?
+	LD	A,00000000B	;  (Preset Hi 500 kbps, 3.5 & 5.25" Rate)
+	JR	NZ,StSiz0	; ..jump if Hi-Density/Speed to Set if Yes
+	LD	A,(IY+oFMT)
+	AND	01100B		; Else Get Drive size
+	CP	01000B		; 5.25"?
+	LD	A,00000010B	;  (Prepare for 250 kbps)
+	JR	NZ,StSiz0	; ..jump if Not 5.25" w/Rate Set
+	BIT	4,(IY+oFMT)	; Hi-Density capable drive?
+	LD	A,00000010B	;  (Prepare for 250 kbps)
+	JR	Z,StSiz0	; ..jump if No
+	LD	A,00000001B	; Else set to 300 kbps (@360 rpm = 250kbps)
+StSiz0:	OUT	(DRR),A		; Set Rate in FDC Reg
+	LD	D,A		;   preserve Rate bits
+	IN0	A,(1FH)		; Read Cntrl Reg (B7=1 if Hi Speed)
+	RLA			;  Speed to Bit Carry..Turbo?
+	LD	A,SPEED		;   (Get Processor Rate in MHz)
+	JR	C,StSiz1	;  ..jump if Turbo for longer delay
+	SRL	A		;  Else divide rate by 2
+StSiz1:	INC	D
+	DEC	D		; 500 kb/s (Hi-Speed) Rate (D=0)?
+	JR	NZ,StSiz2	; ..jump if Not
+	LD	A,1		;  Else minimum delay for "High-Speed"
+StSiz2:	LD	(dlyCnt),A	;   save delay count
+	RET
+
+;-------------------------------------------------------------
+; SEEK - Set the Track for disk operations and seek to it.
+;
+; Enter :  A = Desired Track Number
+;	   D = Verify flag (0=No, FF=Yes)
+; Return:  A = 0, Zero Flag Set (Z) if Ok, A <> 0 Zero Clear (NZ) if Error
+; Uses  : AF		All other Registers Preserved/Not Affected
+
+SEEK:	PUSH	HL		; Save Regs used here
+	PUSH	DE
+	PUSH	BC
+
+	LD	A,(trk)		;  Get Track #
+	CP	(IY+oTRK)	; Is desired Track same as last logged?
+	LD	(IY+oTRK),A	;  (set as if we made it there)
+	JR	NZ,SEEKNV	; ..jump if Not Same
+	INC	D		; Else Set to No Verify (FF->0)
+SEEKNV:	LD	A,4		; Get the maximum Retry Count
+SEEK1:	LD	(retrys),A	;  save remaining Retry Count
+	LD	BC,3*256+0FH	;   (3-byte Seek Command = 0FH)
+	CALL	FdCmd		; Execute the Seek
+	CALL	FdcDn		; Clear Pending Int, wait for Seek Complete
+	AND	01000000B	; Set NZ if Abnormal Termination
+
+	INC	D		; Are we Verifying (FF -> 0)?
+	CALL	Z,ReadID	;   Read next ID Mark if So
+	DEC	D		;    (Correct for Test, 0 -> FF)
+
+	OR	A		; Set Status (Seek Status if No ReadID)
+	JR	Z,SEEKX		; ..exit if Ok
+
+	LD	A,(retrys)	; Else get trys remaining
+	DEC	A		; Any left (80-track could need two)?
+	JR	NZ,SEEK1	; ..loop to try again if More
+	DEC	A		; Else set Error Flag (0->FF)
+
+SEEKX:	POP	BC		; Restore Regs
+	POP	DE
+	POP	HL
+	RET
+
+;-------------------------------------------------------------
+; FDCMD - Send Command to DP-8473 FDC
+; Enter:  B = # of Bytes in Command, C = Command Byte
+;	 HL -> Buffer for Read/Write Data (If Needed)
+; Exit : AF = Status byte
+; Uses : AF.  All other registers preserved/unused
+
+FdCmd:	PUSH	HL		; Save regs (for Exit)
+	PUSH	BC
+	PUSH	HL		;   save pointer for possible Transfer
+	CALL	Motor		; Insure motors are On
+	LD	HL,comnd	; Point to Command Block
+	LD	(HL),C		;  command passed in C
+	LD	C,DR		;   DP8473 Data Port
+OtLoop:	CALL	WRdy		; Wait for RQM (hoping DIO is Low) (No Ints)
+	OUTI			; Output Command bytes to FDC
+	JR	NZ,OtLoop	; ..loop til all bytes sent
+
+	POP	HL		; Restore Possible Transfer Addr
+FdCi1:	CALL	WRdy
+	BIT	5,A		; In Execution Phase?
+	JR	Z,FdcRes	; ..jump if Not to check result
+	BIT	6,A		; Write?
+	JR	NZ,FdCi2	; ..jump if Not to Read
+	OUTI			; Else Write a Byte from (HL) to (C)
+	JR	FdCi1		;   and check for next
+
+FdCi2:	INI			; Read a byte from (C) to (HL)
+	JR	FdCi1		;   and check for next
+
+FdcRes:	LD	HL,st0		; Point to Status Result area
+IsGo:	CALL	WRdy
+;;;	EI			;  (Ints Ok now)
+	BIT	4,A		; End of Status/Result?
+	JR	Z,FdcXit	; ..exit if So
+	BIT	6,A		; Another byte Ready?
+	JR	Z,FdcXit	; ..exit if Not
+	INI			; Else Read Result/Status Byte
+	JR	IsGo		; ..loop for next
+
+FdcXit:	POP	BC		; Restore Regs
+	POP	HL
+	RET
+
+;-------------------------------------------------------------
+; Check for Proper Termination of Seek/Recalibrate Actions by
+;  executing a Check Interrupt Command returning ST0 in A.
+; Enter: None.  Used after Seek/Recalibrate Commands
+; Exit : AF = ST0 Result Byte
+; Uses : AF.  All other registers preserved/unused
+
+FdcDn:	PUSH	HL		; Don't alter regs
+FdcDn0:	CALL	WRdy1
+	LD	A,8		; Sense Interrupt Status Comnd
+	OUT	(DR),A
+	CALL	WRdy1
+	IN	A,(DR)		; Get first Result Byte (ST0)
+	LD	L,A
+	CP	80H		; Invalid Command?
+	JR	Z,FdcDn0	; ..jump to exit if So
+	CALL	WRdy1
+	IN	A,(DR)		; Read Second Result Byte (Trk #)
+	LD	A,L
+	BIT	5,A		; Command Complete?
+	JR	Z,FdcDn0	; ..loop if Not
+	POP	HL
+	RET
+
+;-------------------------------------------------------------
+; MOTOR CONTROL.  This routine performs final selection of
+; the drive control latch and determines if the Motors are
+; already spinning.  If they are off, then the Motors are
+; activated and the spinup delay time in tenths-of-seconds
+; is performed before returning.
+;
+; Enter : None
+; Return: None
+; Uses  : HL.  Remaining Registers Preserved/Not Affected
+
+Motor:	PUSH	AF		; Save Regs
+	LD	A,(motim)	; Get remaining Seconds
+	OR	A		; Already On?
+	LD	A,MONTIM	;  (get On Time)
+	LD	(motim),A	;   always reset
+	JR	NZ,MotorX	; ..exit if already running
+	PUSH	BC
+	LD	A,(hdr)		; Get current Drive
+	OR	11110100B	;   Set All Motors On and Controller Active
+	CALL	Activ8		;     Do It!
+;;==	LD	A,(drive)	; Get Current drive
+;;==	CALL	GetPrm		;  Pt to Param table
+;;==	LD	BC,oSPIN
+;;==	ADD	HL,BC		;   offset to Spinup Delay
+;;==	LD	A,(HL)		;    Get value
+;;==	LD	(mtm),A		;     to GP Counter
+;;==	EI			; Insure Ints are ABSOLUTELY Active..
+	LD	B,SPEED	;;==
+	LD	HL,0	;;==
+MotoLp:	DEC	HL	;;==
+	LD	A,L	;;==
+	OR	L	;;==
+;;==	LD	A,(mtm)		;  ..otherwise, loop never times out!
+;;==	OR	A		; Up to Speed?
+	JR	NZ,MotoLp	; ..loop if Not
+	DI			; No Ints now..
+	DJNZ	MotoLp	;;==
+	POP	BC
+MotorX:	POP	AF		; Restore Reg
+	RET
+
+;-------------------------------------------------------------
+; Wait for FDC RQM to become Ready with Timeout indicator.
+; Timeout Length is arbitrary and depends on CPU Clock Rate.
+
+WRdyT:	DI			; No Ints while we are doing I/O
+	LD	BC,25000	; << Arbitrary >>
+WRdyT0:	DEC	BC
+	LD	A,B
+	OR	C		; Timed Out?
+	SCF			;  (set Error Flag in case)
+	RET	Z		; ..return Error Flag if Yes
+	IN	A,(MSR)		; Read Status Reg
+	AND	80H		; Interrupt Present (also kill Carry)?
+	RET	NZ		; ..return Ok if Yes
+	JR	WRdyT0		;  ..else loop to try again
+ 
+;-------------------------------------------------------------
+; Wait for FDC RQM to become Ready, return DIO status in
+; Zero Flag.  Pause before reading status port (~12 mS
+; specified, some assumed in code).
+
+WRdy:	DI			; No Ints while we are doing I/O
+				;  (entry to avoid Disabling Ints)
+WRdy1:	LD	A,(dlyCnt)	; Get delay count
+WRdy0:	DEC	A		;  count down
+	JR	NZ,WRdy0	;   for ~6 uS Delay
+WRdyL:	IN	A,(MSR)		; Read Main Status Register
+	BIT	7,A		; Interrupt Present?
+	RET	NZ		;  Return if So
+	JR	WRdyL		;   Else Loop
+
+;-------------------------------------------------------------
+; Return Pointer to Parameters of selected Drive
+; Enter: A = Drive (0..3)
+; Exit : HL -> Parameter entry of drive
+; Uses : AF,HL
+
+GetPrm:	PUSH	DE
+	LD	DE,TBLSIZ	; Entry Size
+	LD	HL,_dTbl	;  Init to table start
+	INC	A
+GetPr0:	DEC	A		; End?
+	JR	Z,GetPrX	; ..quit if Yes, Ptr set
+	ADD	HL,DE		; Else step to next
+	JR	GetPr0		; ..loop til found
+
+GetPrX:	POP	DE
+	RET
+
+;-------------------------------------------------------------
+; This routine called at each Clock Interrupt.  It is used
+; to provide any necessary timer/timeout functions.
+; Enter: None.
+; Exit : HL -> mtm byte variable
+;	 AF - destroyed
+; Uses : AF,HL
+
+_FdcCk:	LD	HL,motim	; Point to FDC Motor-On timer
+	LD	A,(HL)
+	OR	A		; Already Timed out?
+	JR	Z,TDone		; ..jump if Yes
+	DEC	(HL)		; Else count down
+	CALL	Z,MotOff	;   stop motors if timed out
+TDone:	INC	HL		; Advance ptr to watchdog/spinup timer (mtm)
+	LD	A,(HL)
+	OR	A		; Timed out?
+	RET	Z		; ..quit if Yes
+	DEC	(HL)		; Else count down
+	RET			;   exit
+
+;-------------------------------------------------------------
+; Motor Off routine.  Force Off to delay on next select
+; Enter: None. (Motoff)
+;	 A = FDC Device Control Reg bits (Activ8/ActivA)
+; Exit : A = Current DCR Register / "active" byte settings
+; Uses : AF
+
+MotOff:	XOR	A
+	LD	(motim),A	; Insure Motors Marked as OFF
+	LD	A,(active)	; Get current settings
+	AND	00000111B	;  strip off Motor bits
+Activ8:	OR	00000100B	;   (insure FDC out of Reset)
+ActivA:	LD	(active),A	;    save
+	OUT	(DCR),A		;     and Command!
+	RET
+
+;------------------- Data Storage Area -----------------------
+; Disk and Drive parameters are dictated by table entries.  While
+; not all parameters are implemented in this module, they may be
+; added as desired.  A bit-mapped byte is used defined as:
+
+; D D D D D D D D		Format Byte
+; 7 6 5 4 3 2 1 0
+; | | | | | | +-+----- Sector Size: 000=128, 001=256, 010=512, 011=1024 bytes
+; | | | | +-+--------- Disk Size: 00=fixed disk, 01=8", 10=5.25", 11=3.5"
+; | | | +------------- 0 = Normal 300 RPM MFM,    1 = "High-Density" Drive
+; | | +--------------- 0 = Single-Sided,          1 = Double-Sided
+; | +----------------- 0 = Double-Density,        1 = Single-Density
+; +------------------- 0 = 250 kbps (normal MFM), 1 = 500 kbps (Hi-Density)
+
+IBMPC3	EQU	10101110B	; HD,  DD, DS, 3.5",   512-byte Sctrs (1.44 MB)
+UZIHD3	EQU	10101111B	; HD,  DD, DS, 3.5",  1024-byte Sctrs (1.76 MB)
+IBMPC5	EQU	10101010B	; HD,  DD, DS, 5.25",  512-byte Sctrs (1.2 MB)
+UZIHD5	EQU	10101011B	; HD,  DD, DS, 5.25", 1024-byte Sctrs (1.44 MB)
+DSQD3	EQU	00101111B	; MFM, DD, DS, 3.5",  1024-byte Sctrs (800 KB)
+DSDD3	EQU	00101110B	; MFM, DD, DS, 3.5",   512-byte Sctrs (800 KB)
+DSQD5	EQU	00101011B	; MFM, DD, DS, 5.25", 1024-byte Sctrs (800 KB)
+DSDD5	EQU	00101010B	; MFM, DD, DS, 5.25",  512-byte Sctrs (800 KB)
+	
+	 psect data
+_dTbl:				; Drive Param Table.  1 Entry Per Drive.
+	DEFB	00H, 0CFH, 02H, 27, 18,  1, IBMPC3, 16, 0
+	;	 |     |    |    |   |   |    |      |  +- Current Track Number
+	;	 |     |    |    |   |   |    |      +- Spinup (1/20-secs)
+	;	 |     |    |    |   |   |    +-- Format Byte (See above)
+	;	 |     |    |    |   |   +------- First Sector Number
+	;	 |     |    |    |   +------- Physical Sectors-Per-Track
+	;	 |     |    |    +----------- Gap3 (Size 512=27, 1024=13)
+	;	 |     |    +---------------- Hd Load in 4mS steps (0=inf)
+	;	 |     +--------------------- Step Rate (B7-4), HUT (3-0)
+	;	 +--------------------------- Drive Logged (FF), Unlogged (0)
+TBLSIZ	 EQU  $-_dTbl
+	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0
+	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0
+	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0
+
+; -->>> NOTE: Do NOT move these next two variables out of sequence !!! <<<--
+motim:	DEFB	0		; Motor On Time Counter
+mtm:	DEFB	0		; Floppy Spinup Time down-counter
+
+dlyCnt:	DEFB	SPEED		; Delay to avoid over-sampling status register
+
+	 psect bss
+sysSav:	DEFS	1		; Entry "insys" process status flag
+drive:	DEFS	1		; (minor) Currently Selected Drive
+active:	DEFS	1		; Current bits written to Dev Contr Reg (DCR)
+;;--block:	DEFS	1		; Index in Buffer for desired 512-byte block
+;;--buffer:	DEFS	1024		; Physical Sector Buffer.  Max Possible Size
+
+
+comnd:	DEFS	1		; Storage for Command in execution
+hdr:	DEFS	1		; Head (B2), Drive (B0,1)
+trk:	DEFS	1		; Track (t)
+hd:	DEFS	1		; Head # (h)
+sect:	DEFS	1		; Physical Sector Number
+rsz:	DEFS	1		; Bytes/Sector (n)
+eot:	DEFS	1		; End-of-Track Sect #
+gpl:	DEFS	1		; Gap Length
+dtl:	DEFS	1		; Data Length
+
+; FDC Operation Result Storage Area
+
+st0:	DEFS	1		; Status Byte 0
+st1:	DEFS	1		; Status Byte 1 (can also be PCN)
+	DEFS	1		; ST2 - Status Byte 2
+	DEFS	1		; RC - Track #
+	DEFS	1		; RH - Head # (0/1)
+	DEFS	1		; RR - Sector #
+	DEFS	1		; RN - Sector Size
+
+actDma:	DEFS	2		; 16-bit DMA Address
+
+; DISK Subsystem Variable Storage
+
+rdOp:	DEFS	1		; Read/write flag
+retrys:	DEFS	1		; Number of times to try Opns
+rwRtry:	DEFS	1		; Number of read/write tries
+DRVSPD:	DEFS	1		; Drive Speed
+DRVSIZ:	DEFS	1		; Drive Size
+
+_fsector: defs	1
+_ftrack:  defs	1		; LSB used as Head # in DS formats
+_ferror:  defs	1
+_fbuf:	  defs	2
+	 psect  text

@@ -1,0 +1,71 @@
+; /***************************************************************
+;    UZI (Unix Z80 Implementation) Kernel:  startasm.asz
+; ----------------------------------------------------------------
+;             Copyright (C) 1998 by Harold F. Bower
+; ****************************************************************/
+; Revisions:
+
+	psect	text
+	global	_initsys, _init0    ; _init0 is PUBlic, _initsys is external
+
+*Include   ASMDEF.I
+*Include   Z180.I
+
+_init0:	DI			; No Interrupts while we mess around here
+	XOR	A		;  Disable Interrupts and PRT downcounting
+	OUT0	(TCR),A		;   until Int Vector Table initialized
+
+; Bypass div-by-2 from crystal if using ZS8180 or Z80182 at High-Speed
+
+	  COND  HISPEED .eq. TRUE
+	LD	A,80H		; Set Hi-Speed flag
+	  ENDC
+	  COND  HISPEED .eq. FALSE
+	XOR	A		; Set for Lo-Speed
+	  ENDC
+	OUT0	(CCR),A		;   speed up if ZS8180 or Z80182
+
+	ex	(sp),iy		;    (settle)
+	ex	(sp),iy
+
+	LD	A,0F0H		; Set New Common Base
+	OUT0	(CBAR),A	;   for the high module
+
+	IN0	A,(BBR)
+	OUT0	(CBR),A
+
+;;;;;	LD	SP,0		;  Set Initial Stack to Top.
+	LD	SP,0e000h	; so the idle routine works
+
+		; To reduce storage requirements of the executable image (and
+		; avoid problems with the Hi-Tech linker) we link in the order:
+		;  text -> data -> common -> bss; with Bss at an absolute addr
+		; of 8000H.  This needs to be raised in the linkage script if
+		; the combined image size exceeds 7F00H bytes.
+
+	LD	HL,0F000H	; Zero the top 4k of memory
+	LD	E,L
+	LD	D,H
+	INC	DE
+	LD	BC,0FFFH
+	LD	(HL),0
+	LDIR
+
+;;--	LD	A,00001000B	; Set Interrupts (00H for Polled Mode)
+;;--	OUT0	(STAT0),A	;  for ASCI0 
+;;--	LD	A,00001100B	; Enable Interrupts & CTS1* (04H for No Ints)
+;;--	OUT0	(STAT1),A	;   for ASCI1
+
+	IN0	A,(DCNTL)	; Get current Wait State settings
+	AND	0FH		;  (don't change DMA bits)
+	OR	MWAIT .SHL. 6 + IOWAIT .SHL. 4
+	OUT0	(DCNTL),A	;   and send it
+
+	LD	HL,RELOAD	; Get the timer reload constant
+	OUT0	(RLDR0L),L	;  send low byte
+	OUT0	(RLDR0H),H	;   and hi byte
+
+	LD	A,00H		; Else disable DRAM Refresh (83H to activate)
+	OUT0	(RCR),A		; Set Refresh timing specs
+
+	jp	_initsys

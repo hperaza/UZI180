@@ -1,0 +1,539 @@
+;/***************************************************************
+;   UZI (Unix Z80 Implementation) Kernel:  utils.asz
+;----------------------------------------------------------------
+; Adapted from UZI By Doug Braun, and UZI280 by Stefan Nitschke
+;            Copyright (C) 1998 by Harold F. Bower
+;       Portions Copyright (C) 1995 by Stefan Nitschke
+;****************************************************************/
+;/* Revisions:
+; *  15.1.98 - Extracted from machdep.c and several of Stefan's
+; *		separate modules in UZI280.		      HFB
+; *  29.9.99 - bcopy() made reentrant.                        HP
+; */
+
+	global	_shift8, _puts, _kprintf, _bcopy, _bzero	; PUBlic
+	global	_itob, _abort, _strlen				;   "
+
+	global	__putc						; EXTern
+
+	global	csv, ncsv, cret, indir, lmod, wrelop, ldiv	; from Runtime
+
+	psect	text
+
+;--------------------------------------
+; /* This shifts an unsigned int right 8 places. */
+
+; shift8()
+; {
+; #asm
+
+_shift8:
+	pop	de
+	pop	hl
+	ld	l,h
+	ld	h,0
+	push	hl
+	push	de
+
+; #endasm
+	ret	
+; }
+
+
+;--------------------------------------
+; puts (char *s)
+; {
+
+_puts:
+	call	csv
+
+;     while (*s)
+
+L34:	ld	l,(ix+6)
+	ld	h,(ix+7)
+	ld	a,(hl)
+	or	a
+	jp	z,cret
+
+;         kputchar (*s++);
+
+	inc	hl
+	ld	(ix+6),l
+	ld	(ix+7),h
+	ld	l,a
+	ld	h,0
+	push	hl
+	call	_kputchar
+	pop	bc
+	JR	L34
+; }
+
+
+;--------------------------------------
+; kputchar (c)
+; char c;
+; {
+
+_kputchar:
+	pop	de		; Ret Addr
+	pop	hl		;  c
+	push	hl
+	push	de
+
+;     if (c == '\n')
+
+	ld	a,l
+	push	hl		; Save Char for print in L37
+	cp	10
+	JR	nz,L37
+
+;         _putc (0, '\r');	/* Use default TTY, minor=0 */
+
+	ld	l,13
+	push	hl
+	LD	L,1		; Dev = default TTY
+	push	hl
+	call	__putc
+	pop	bc
+	pop	bc
+
+;     _putc (0, c);
+
+			; Char already on Stack as 1st Param
+L37:	LD	HL,1		; Dev = default TTY
+	push	hl
+	call	__putc
+	pop	bc
+	pop	bc
+; }
+	ret
+
+
+;--------------------------------------
+; /* Short version of printf to save space.
+;  * NOTE: This code may need to be rewritten for different compilers
+;  *       since it makes assumptions about the parameter ordering and
+;  *       sizing on the system stack.
+;  */
+; kprintf (nargs)
+; char *nargs;
+; {
+
+_kprintf:
+	call	ncsv
+	defw -10
+
+;     register char *fmt;
+;     register char c;
+;     int  base;
+;     char s[7], *itob();
+
+;     fmt = &nargs+1;             /* NOTE: Assumes Pointer to 2-byte Word */
+
+	push	ix
+	pop	de
+	ld	hl,8
+	add	hl,de
+	push	hl
+	pop	iy
+
+;     while (c = *nargs++) {
+
+L46:	ld	l,(ix+6)
+	ld	h,(ix+7)
+	ld	a,(hl)
+	inc	hl
+	ld	(ix+6),l
+	ld	(ix+7),h
+	or	a
+	jp	z,cret
+
+;         if (c != '%') {
+;             kputchar (c);
+;             continue;
+
+	cp	37
+	JR	NZ,L6
+
+;         }
+;         switch (c = *nargs++) {
+
+	ld	a,(hl)
+	inc	hl
+	ld	(ix+6),l
+	ld	(ix+7),h
+	cp	'd'		; 100
+	JR	z,L53
+	cp	'o'		; 111
+	JR	z,L55
+	cp	's'		; 115
+	JR	z,L58
+	cp	'u'		; 117
+	JR	z,L56
+	cp	'x'		; 120
+	JR	z,L57
+	cp	'c'		; 99
+	JR	NZ,L6
+
+L52:	ld	l,(ix+6)
+	ld	h,(ix+7)
+	ld	a,(hl)
+	inc	hl
+	ld	(ix+6),l
+	ld	(ix+7),h
+	jp	L6
+
+;             case 'c': kputchar (*nargs++);
+
+L6:	ld	l,a
+	LD	H,0
+	push	hl
+	call	_kputchar
+	pop	bc
+;                       continue;
+	JR	L46
+
+;             case 'd': base = -10;
+;                       goto prt;
+
+L53:	ld	(ix-3),246
+	ld	(ix-2),255
+	jp	L54
+
+;             case 'o': base = 8;
+;                       goto prt;
+
+L55:	ld	(ix-3),8
+	JR	L59
+
+;             case 'u': base = 10;
+;                       goto prt;
+
+L56:	ld	(ix-3),10
+	JR	L59
+
+;             case 'x': base = 16;
+
+L57:	ld	(ix-3),16
+L59:	ld	(ix-2),0
+
+;    prt:
+;                       puts (itob (*(int *)fmt, s, base));
+
+L54:	ld	l,(ix-3)
+	ld	h,(ix-2)
+	push	hl
+	push	ix
+	pop	de
+	ld	hl,-10
+	add	hl,de
+	push	hl
+	ld	l,(iy+0)
+	ld	h,(iy+1)
+	push	hl
+	call	_itob
+	pop	bc
+	pop	bc
+	ex	(sp),hl
+	call	_puts
+	pop	bc
+
+;                       fmt++;  fmt++;	/* NOTE: for Size of Word Ptr */
+
+L60:	inc	iy
+	inc	iy
+
+;                       continue;
+	jp	L46
+
+;             case 's': puts (*(char **)fmt);
+
+L58:	ld	l,(iy+0)
+	ld	h,(iy+1)
+	push	hl
+	call	_puts
+	pop	bc
+
+;                       fmt++;  fmt++;    /* NOTE: for Size of Word Ptr */
+;                      continue;
+	jp	L60
+
+;             default: kputchar (c);
+;                      continue;
+;         }
+;     }
+; }
+
+
+;--------------------------------------
+; Lock up the system in response to a fatal error.
+;   (from UZI original EXTRAS.C module)
+
+; abort()
+; {
+_abort:	di
+	global	trap_ept	;;;;  HP
+	jp	trap_ept	;;;;  HP -- enter debug monitor
+;;;;	halt
+;;;;	jr	_abort		; If an interrupt hits anyway, loop..
+; }
+
+
+;--------------------------------------
+; /* itob.c */
+; Moderately optimized version of UZI280 code from Hi-Tech C Compiler output.
+;     UZI280 is Copyright (1990-95) by Stefan Nitschke and Doug Braun.
+;							H.F.Bower, 3 Jan 1998
+
+; #define TRUE 1
+; #define FALSE 0
+
+; /* convert an integer to a string in any base (2-36) */
+; char *itob (int n, char *s, int base)
+;     {
+
+_itob:	call ncsv
+	defw -8
+
+;     register unsigned int u;
+;     register char *p, *q;
+;     register negative, c;
+
+;     if ((n < 0) && (base == -10)) {
+
+	bit	7,(ix+7)
+	jr	z,L2
+	ld	de,-10
+	ld	l,(ix+10)
+	ld	h,(ix+11)
+	or	a
+	sbc	hl,de
+	jr	nz,L2
+
+;         negative = TRUE;
+
+	set	0,(ix-6)
+
+;         u = -n;
+
+	ld	e,(ix+6)
+	ld	d,(ix+7)
+	ld	hl,0
+	or	a
+	sbc	hl,de
+	jr	L3
+
+;         }
+;     else {
+;         negative = FALSE;
+
+L2:	res	0,(ix-6)
+
+;         u = n;
+
+	ld	l,(ix+6)
+	ld	h,(ix+7)
+L3:	ld	(ix-2),l
+	ld	(ix-1),h
+
+;         }
+;     if (base == -10)            /* Signals signed conversion */
+
+	ld	de,-10
+	ld	l,(ix+10)
+	ld	h,(ix+11)
+	or	a
+	sbc	hl,de
+	jr	nz,L4
+
+;          base = 10;
+
+	ld	(ix+10),10
+	ld	(ix+11),0
+
+;     p = q = s;
+
+L4:	ld	l,(ix+8)
+	ld	h,(ix+9)
+	ld	(ix-4),l
+	ld	(ix-3),h
+	push	hl
+	pop	iy
+
+;     do {                        /* Generate digits in reverse order */
+;         if ((*p = u % base + '0') > '9')
+
+L7:	ld	e,(ix+10)
+	ld	d,(ix+11)
+	ld	l,(ix-2)
+	ld	h,(ix-1)
+	call	lmod
+	ld	a,l
+	add	a,'0'
+	ld	(iy+0),a
+	cp	'9'+1		; > '9'?
+	jr	c,L8		; ..jump if Not
+
+;             *p += ('A' - ('9' + 1));
+
+	add	a,7
+	ld	(iy+0),a
+
+;         ++p;
+
+L8:	inc	iy
+
+;         u = u / base;
+
+	ld	e,(ix+10)
+	ld	d,(ix+11)
+	ld	l,(ix-2)
+	ld	h,(ix-1)
+	call	ldiv
+	ld	(ix-2),l
+	ld	(ix-1),h
+
+;         } while (u > 0);
+
+	ld	a,l
+	or	h
+	jr	nz,L7
+
+;     if (negative)
+
+	bit	0,(ix-6)
+	jr	z,L9
+
+;         *p++ = '-';
+
+	ld	(iy+0),'-'
+	inc	iy
+
+;     *p = '\0';                  /* Terminate the string */
+
+L9:	ld	(iy+0),0
+
+;     while (q < --p) {           /* Reverse the digits */
+
+	jr	L10
+
+;         c = *q;
+
+L11:	ld	l,(ix-4)
+	ld	h,(ix-3)
+	ld	a,(hl)
+
+;         *q++ = *p;
+
+	ld	e,(iy+0)
+	ld	(hl),e
+	inc	hl
+	ld	(ix-4),l
+	ld	(ix-3),h
+
+;         *p = c;
+
+	ld	(iy+0),a
+
+;         }
+
+L10:	dec	iy
+	push	iy
+	pop	de
+	ld	l,(ix-4)
+	ld	h,(ix-3)
+	call	wrelop
+	jr	c,L11
+
+;     return s;
+
+	ld	l,(ix+8)
+	ld	h,(ix+9)
+;     }
+	jp	cret
+
+
+;--------------------------------------
+; Return length of Null-terminated string
+; Enter: Ptr to String on Stack Top
+; Exit : HL = Number of chars from start to Null
+; Uses : AF,DE,HL
+
+; int strlen (char *s)
+; {
+;     int n;
+
+_strlen:
+	pop	hl		; Return addr
+	pop	de		;  Ptr to string
+	push	de		;   keep on stack
+	push	hl		;    ret addr back to stack
+
+;     n = 0;
+
+	ld	hl,0		; Initialize counter
+
+;     while (*s++ != NULL)
+
+strl0:	ld	a,(de)		; Get a char
+	inc	de		;   advance ptr
+	or	a		; End-of-string?
+	ret	z		; ..exit if yes (Count in HL)
+
+;         ++n;
+
+	inc	hl		;  bump count to show we had a char
+	jr	strl0		;   back for more
+
+;     return (n);
+; }
+
+
+;--------------------------------------
+; Clear the memory starting at the address at "ptr", for "count" bytes
+;
+; bzero(ptr,count)
+; char *ptr;
+; int count;
+; {
+
+_bzero:	pop	de		; Return Addr
+	pop	hl		;  Start of area to fill
+	pop	bc		;   count
+	push	bc		;    (keep stack loaded)
+	push	hl
+	push	de		; Save Ret Addr
+	ld	a,b
+	or	c		; Any count?
+	ret	z		; ..exit here if nothing to clear
+	ld	(hl),0		; Zero the first byte
+	ld	e,l
+	ld	d,h		;  copy the addr
+	inc	de		;   + 1
+	dec	bc		; count - 1
+	ld	a,b
+	or	c
+	ret	z		; ..exit here if only one byte to zero
+	ldir
+	ret
+
+
+;--------------------------------------
+; Copy "count" bytes from "src" to "dest".  Block Move function.
+;   BCOPY (SRC, DEST, COUNT)
+
+_bcopy:	push	ix
+	ld	ix,0
+	add	ix,sp
+	ld	l,(ix+4)
+	ld	h,(ix+5)
+	ld	e,(ix+6)
+	ld	d,(ix+7)
+	ld	c,(ix+8)
+	ld	b,(ix+9)
+	ld	a,b
+	or	c		; Zero Length?
+	jr	z,nocopy	; ..jump to avoid 64k move
+	ldir
+nocopy:	pop	ix
+	ret

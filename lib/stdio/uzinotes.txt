@@ -1,0 +1,14 @@
+- excluded getargs, as it uses cpmbuf and fcb's
+- changed fseek
+- UZI's stdio.h used instead of the HiTech one
+- added sys_err.c for uzi's perrors
+- changed fgetc.as (fgetc)
+- changed getenv.c
+- added putenv.c
+- changed perror.c (added ' ' after ':' and corrected a typo 'erorr')
+- excluded fakecleanup.c and setup.c (this last was not in the lib anyway)
+- added fdopen.c
+- added tmpnam.c
+- corrected stdarg.h so the va* macros now really work
+- added vprintf.c, vfprintf.c, vsprintf.c, vscanf.c vsscanf.c
+- fixed a minor bug in sscanf.c

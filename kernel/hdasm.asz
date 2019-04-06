@@ -1,0 +1,229 @@
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+; HDASM.ASZ.						       HFB - 13.2.98
+; Hard disk routines as implemented for Tilmann Reh's GIDE board
+;     adapted to the D-X Designs Pty Ltd P112.
+; Portions derived from GIDE.Z80 with tips from GIDETEST.PAS by Tilmann Reh.
+;---------------------------------------------------------------------------
+; Revisions:
+;  15 Feb 98 - Added long delay for ready tests incase of spindown.	HFB
+;  13 Aug 98 - Set Physical drive params in DEVHD via HDCONF.H and
+;		set values in _hdhds and _hdspt.			HFB
+
+	global	_scsiop, _hdhds, _hdspt				   ; PUBlic
+
+	global	_dptr, _dlen, _cptr, _busid, _cmdblk, _hd_offset   ; in DevHD
+
+	 psect  text
+
+; Equates reflecting GIDE Base address from Address Jumpers
+
+GIDE	EQU	50H		; Set base of 16 byte address range
+IDEDOR	EQU	GIDE+6		; Digital Output Register
+IDEDat	EQU	GIDE+8		; IDE Data Register (16-bit wide)
+IDEErr	EQU	GIDE+9		; IDE Error Register
+IDESCnt	EQU	GIDE+0AH	; IDE Sector Count Register
+IDESNum	EQU	GIDE+0BH	; IDE Sector Number Register
+IDECLo	EQU	GIDE+0CH	; IDE Cylinder Number (Low)
+IDECHi	EQU	GIDE+0DH	; IDE Cylinter Number (High)
+IDESDH	EQU	GIDE+0EH	; IDE S-Drive-Head Register
+IDECmd	EQU	GIDE+0FH	; IDE Command/Status Register
+
+CMDHOM	EQU	10H		; Home Drive Heads
+CMDRD	EQU	20H		; Read Sector Command (w/retry)
+CMDWR	EQU	30H		; Write Sector Command (w/retry)
+CMDVER	EQU	40H		; Verify Sector(s) Command (w/retry)
+CMDFMT	EQU	50H		; Format Track Command
+CMDDIAG	EQU	90H		; Execute Diagnostics Command
+CMDINIT	EQU	91H		; Initialize Drive Params Command
+CMDPW0	EQU	0E0H		; Low Range of Power Control Commands
+CMDPW3	EQU	0E3H		; High Range of Power Control Commands
+CMDPWQ	EQU	0E5H		; Power Status Query Command
+CMDID	EQU	0ECH		; Read Drive Ident Data Command
+
+;---------------------------------------------------------------------
+; Compute the CHS Address and try the Command specified.
+
+_scsiop:
+	LD	BC,0		; Wait up to several seconds for drive ready
+WtLp:	IN	A,(IDECmd)	; Get the Busy Bit
+	RLA			; Is it BSY?
+	JR	NC,HdOp0	; ..jump if Not
+	call	hdelay		; Else pause..
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,WtLp		;..loop if more time remains
+	LD	HL,-1
+	RET			; Else Return Timeout Error
+
+hdelay:	push	bc		; Save overall Counter
+	ld	b,0		;  Set max loop delay
+hdel0:	djnz	hdel0		; ..pause..
+	pop	bc		;    restore regs
+	ret
+
+HdOp0:	LD	HL,(_cmdblk+2)	; Get low 16-bits of Block #
+	LD	E,H		;  in
+	LD	D,L		;   Little-Endian order
+	LD	HL,(_hd_offset)	; Fetch Track offset for this Logical Unit
+	XOR	A
+	LD	B,4
+Mul16:	ADD	HL,HL		; Multiply by 16
+	ADC	A,A		;   with 20-bit result
+	DJNZ	Mul16
+	ADD	HL,DE		; Add desired relative block #
+	ADC	A,0		;   to 20-bit resulting block Number
+	LD	C,A
+
+; This routine uses physical drive characteristics from included file.
+; This routine computes Head, Sector and Track from a sequential block number
+; defined by; Trk_Offset * 16 + Block #.  The Physical characteristics needed
+; from the HDDEF.INC include file are: HDHDA = Number_of_Heads and
+; HDSPT = Sectors_per_Track.  Computation of the CHS address is per:
+;
+;   Sector := (Block# MOD hdSPT)+1	(* Quotient1 := Block# DIV hdSPT *)
+;   Head   := Quotient1 MOD hdHds	(* Quotient2 := Quotient1 DIV hdHds *)
+;   Track  := Quotient2
+;
+; Prepare for Disk Read/Write by Preloading all Registers
+
+	LD	A,(_hdspt)	; Load Number of Sectors-per-Track
+	LD	E,A
+ 	CALL	Divide		; Divide CHL by E
+	INC	A		;  Make Sctr # Base at 1
+	OUT	(IDESNum),A	;   Send to GIDE Register
+	LD	A,(_hdhds)	; Get Number of Heads
+	LD	E,A
+	CALL	Divide		; Divide CHL (Quotient from above) by E
+	OR	0A0H		;  add Fixed Pattern (Assuming Unit 0, Master)
+	OUT	(IDESDH),A	;   Send to GIDE Register
+	LD	A,H
+	OUT	(IDECHi),A	; Send Hi-Byte of Cylinder Number to GIDE
+	LD	A,L
+	OUT	(IDECLo),A	;  and send Lo-Byte of Cylinder Number
+	LD	A,0AAH
+	OUT	(IDEErr),A	; Activate Retries w/pattern in GIDE Err Reg
+	LD	A,(_cmdblk+4)	; Get Number of blocks to Read/Write
+	OUT	(IDESCnt),A	;   pass to GIDE
+
+	LD	A,5		; Give it a few tries
+HDOps0:	LD	(HRTrys),A	; Save Count
+	CALL	GoGIDE		; Try Read/Write Operation
+	LD	HL,0		;  (assume Good return status)
+	RET	Z		; ..quit if Ok
+	LD	A,(HRTrys)	; Else
+	DEC	A		; Any tries remaining?
+	JR	NZ,HDOps0	; ..loop if So
+	DEC	HL		; Else Return -1 Error Status
+	RET
+
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+; The IDE/ATA Command Block layout is:
+;
+; Byte		 Format    R/W/V    Init    RdID    Power   Diag   PwrSet  Home
+; 0 [ Command ]    50    20/30/40    91	     EC   E0/E1/E5   90    E2/E3    10
+; 1 [ BitMap  ]    70     7C/(7E)    74      40	     00	     00	    04      40
+; 2 [ Drv/Hd  ]   0AnH     0AnH    0AnH-1   0AnH     -	     -	    -      0An0
+; 3 [ Cyl#(Hi)]   CylHi    CylHi    CylHi    -	     -	     -	    -       -
+; 4 [ Cyl#(Lo)]   CylLo    CylLo    CylLo    -	     -	     -	    -       -
+; 5 [ Sector# ]	   -	   Sctr	     -	     -	     -	     -	    -       -
+; 6 [ Sctr Cnt]	   -	   SCnt     NSecs    -	     -	     -	  n*5Secs   -
+; 7 [ Err Reg ]	   -	   (0AA)     -	     -	     -	     -	    -       -
+; 8 [ Dgtl Out]	   -	    -	     -	     -	     -	     -	    -       -
+;   Rslts/Stat:   Stat     Stat     Stat    Stat    SCnt    Err	    -      Stat
+;		  Reg      Reg      Reg     Reg     Reg     Reg	           Reg
+;
+; Enter: GIDE Registers primed for Read/Write.
+;	 (_cmdblk+0) has respective Read/Write Command
+; Exit :  A = 0, Zero Flag Set (Z) if Ok, Zero Flag Clear (NZ) if Errors
+;	  H = Error Byte value (If any)
+;	  L = Status Byte value (If any)
+;::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+; Raw GIDE Driver.  Assumes Command in hdComd and Parms in Comnd Data Block
+;   The Target is (hopefully) still ready from initial test
+
+GoGIDE:	LD	HL,(_dptr)	; IO to/from this Data Buffer
+	LD	BC,IDEDat	;   Pre-load Data Reg Adr in C, 0 in B
+	LD	A,(_cmdblk)	; Get Command Byte
+	CP	CMDRD		; Read Sector?
+	JR	Z,HRead
+	CP	CMDWR		; Write Sector?
+	JR	Z,HWrite
+			;..else fall thru to error exit..
+GoGIDX:	LD	HL,5555H	; Return Illegal Command Error Pattern
+	RET			;    and return
+
+;.....
+; Read a Sector from the Disk, or Disk Parameters to the Buffer
+
+HRead:	CALL	Cmd_Wt		; Send Command in A, Return when Ready
+HRead0:	IN	A,(IDECmd)	; Get Status
+	BIT	3,A		; Ready?
+	JR	Z,HRead0	; ..loop if Not
+	INIR			; Read 512 bytes
+	INIR			;   in two-256 byte sequences
+HdFini:	CALL	Wt_Rdy		; Wait for drive to become Ready
+;; -- May need this with some Older Drives that send ECC bytes with no warning!
+;;	BIT	4,A		; DRQ Shifted?
+;;	JR	Z,HdFnQ		; ..jump if Not
+;;	IN	A,(IDEDat)	; Else Read data reg (ECC Bytes?
+;;	JR	HdFini		; ..loop til no more data
+
+HdFnQ:	IN	A,(IDECmd)	; Restore byte
+	AND	10001001B	; Busy, DRQ, or Error?
+	JR	Z,HdFnOk	; ..exit if Ok
+	ld	a,01H		; Else Set Error Status = 1
+HdFnOk:	LD	L,A		;  store
+	LD	H,0
+	RET
+
+;.....
+; Write a 512-byte Sector to the Disk
+
+HWrite:	CALL	Cmd_Wt		; Send Command in A, Return when Ready
+HWrit2:	IN	A,(IDECmd)
+	BIT	3,A		; Data Request?
+	JR	Z,HWrit2	; ..loop if Not
+	OTIR			; Else Write 512 bytes
+	OTIR			;  in two-256 byte operations
+HInit:	CALL	Wt_Rdy
+	JR	HdFnQ		; ..and finish off above
+
+;================== SUPPORT ROUTINES ==================
+; Divide 24-bit Number by 8-bit Number returning Quotient and Remainder
+; Enter: CHL = 24-bit Unsigned Dividend
+;	 E = 8-bit Unsigned Divisor
+; Exit : CHL = 24-bit Quotient
+;	 A = 8-bit Remainder
+; Uses : AF,BC,HL
+
+Divide:	LD	B,24+1		; 25 times thru Loop
+	XOR	A		; Clear Remainder and Carry
+Div:	ADC	A,A		; Shift Accum Left + Carry
+	SBC	A,E		;  Subtract Divisor
+	JR	NC,Div0		; ..jump if it Worked
+	ADD	A,E		; Else restore Accum & Carry
+Div0:	CCF			; Flip Carry Bit
+	ADC	HL,HL		;  Shift any Carry into
+	RL	C		;   Dividend/Quotient
+	DJNZ	Div		;  ..loop til Done
+	RET
+
+;.....
+; Send command to the IDE Command Register, fall thru to wait for Ready Status
+
+Cmd_Wt:	OUT	(IDECmd),A	;   Start Operation
+			;..fall thru to wait for Ready
+; Wait for Drive to become Ready (No Timeout)
+
+Wt_Rdy:	IN	A,(IDECmd)	; Get Drive Status
+	RLA			; Ready?
+	JR	C,Wt_Rdy	; ..loop if Not
+	RET
+
+	 psect  bss
+HRTrys:	DEFS	1		; Retry counter storage
+_hdhds:	DEFS	1		; Number of Heads   (set in DEVHD)
+_hdspt:	DEFS	1		; Sectors-Per-Track (set in DEVHD)
+	 psect  text

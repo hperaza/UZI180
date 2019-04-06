@@ -1,0 +1,138 @@
+; Boot loader for P112 UZI180 floppy disks.
+; Uses the ROM monitor Disk I/O routines.
+; Copyright (C) 2001, Hector Peraza
+
+	psect	text
+
+*include z180.i
+
+dparm	equ	0Bh
+himem	equ	0C000h
+uzi	equ	100h
+cmdline	equ	80h
+
+boot:
+	jp	b1
+
+	defw	ldr - boot + datofs
+
+b1:	ld	hl,ldr
+	ld	de,himem
+	ld	bc,size
+	ldir			; copy loader to high memory
+	jp	loader
+
+ldr:
+
+	psect	boot
+
+loader:
+	ld	a,0C0h		; keep loader and BIOS data area mapped
+	out0	(CBAR),a
+	in0	a,(RAMLBR)	; we'll try to use all the available RAM,
+	out0	(BBR),a		; even the shadowed ROM area
+	in0	a,(SCR)
+	set	3,a		; enable the BIOS ROM in case it was shadowed
+	out0	(SCR),a
+	ld	hl,msg
+	rst	20h
+	ld	hl,kmap
+	ld	de,uzi
+loop:
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ld	a,b
+	or	c
+	jr	z,gouzi
+	call	ldblk
+	jr	loop
+
+gouzi:	ld	a,0Dh
+	rst	18h
+	ld	a,0Ah
+	rst	18h
+	in0	a,(SCR)
+	set	3,a		; disable ROM
+	out0	(SCR),a
+;	in0	a,(BBR)
+;	out	(CBR),a		; setup CBR = BBR
+	ld	hl,cmdline+1
+	ld	a,(bdev)
+	ld	(hl),a
+	inc	hl
+	ld	(hl),0
+	jp	uzi
+
+msg:	defm	'Loading UZI... '
+	defb	0
+
+ldblk:	push	hl
+	push	de
+	ld	ix,(dparm)
+	ld	h,b
+	ld	l,c		; block number to HL
+	call	xlate		; translate block number to track and sector
+	ld	a,2		; read command
+	ld	b,1		; number of sectors
+	ld	d,0		; drive 0
+	ld	hl,bfr
+	rst	08h		; P112 disk services
+	jr	c,error
+	ld	hl,bfr
+	pop	de		; restore load address
+	ld	bc,512
+	in0	a,(SCR)
+	set	3,a		; disable ROM
+	out0	(SCR),a
+	ldir
+	in0	a,(SCR)
+	res	3,a		; enable ROM
+	out0	(SCR),a
+	pop	hl
+	ret
+
+error:
+	ld	hl,errmsg
+	rst	20h
+	rst	38h
+
+errmsg:	defm	'Load error'
+	defb	0Dh, 0Ah, 0
+
+; input:  block number in HL
+; output: track/side in C, sector in E
+
+xlate:	ld	e,(ix+4)	; SPT
+	call	div
+	ld	c,l		; track
+	add	a,(ix+13)	; add 1st sector number
+	ld	e,a
+	ret
+
+; HL/E = HL remainder in A
+
+div:	ld	b,16+1
+	xor	a
+div1:	adc	a,a
+	sbc	a,e
+	jr	nc,div0
+	add	a,e
+div0:	ccf
+	adc	hl,hl
+	djnz	div1
+	ret
+
+datofs	equ	$ - loader
+
+bdev:	defb	0
+kmap:	defs	96*2
+
+	defb	0
+
+size	equ	$ - loader
+
+bfr	equ	$
+
+	end

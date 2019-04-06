@@ -1,0 +1,21 @@
+c -o -c -v data.c;relog
+c -o -c -v devflop.c;relog
+c -o -c -v devhd.c;relog
+c -o -c -v devio.c;relog
+c -o -c -v devmisc.c;relog
+c -o -c -v devtty.c;relog
+c -o -c -v filesys.c;relog
+c -o -c -v machdep.c;relog
+c -o -c -v process.c;relog
+c -o -c -v scall1a.c;relog
+c -o -c -v scall1b.c;relog
+c -o -c -v scall1c.c;relog
+c -o -c -v scall2.c;relog
+c -o -c -v start.c;relog
+zas -n emu.asz;relog
+zas -j -n flopasm.asz;relog
+zas -j -n hdasm.asz;relog
+zas -j -n machasm.asz;relog
+zas -j -n procasm.asz;relog
+zas -j -n utils.asz;relog
+zas -j -n z180asm.asz

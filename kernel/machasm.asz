@@ -1,0 +1,1288 @@
+;/***************************************************************
+;  UZI (Unix Z80 Implementation) Kernel:  machasm.asz
+;----------------------------------------------------------------
+; Adapted from UZI By Doug Braun, and UZI280 by Stefan Nitschke
+;            Copyright (C) 1998 by Harold F. Bower
+;       Portions Copyright (C) 1995 by Stefan Nitschke
+;****************************************************************/
+; Revisions:
+;  22.12.97 - extracted from several modules.		  HFB
+;  01.01.98 - 0.1. First cut at P112 version.		  HFB
+;  23.06.98 - Cleaned up Source.			  HFB
+;  02.10.99 - Added _uzero				  HP
+;  09.10.99 - corrected _ugets, _rdtod			  HP
+;  09.10.99 - corrected the call to signal catcher code	  HP
+;----------------------------------------------------------------
+; Version for the D-X Designs Pty Ltd P112.
+; Capabilities of the P112 are:
+
+;  IDE    - Hard Drive Subsystem using Tilmann Reh's
+;             GIDE (IDE/ATA) Interface
+;  Floppy - SMC 37C665 in Interrupt or Polled mode.
+;  RTC    - Dallas DS-1202 via Z182 Parallel bits.
+;  Printer- Centronics port on SMC 37C665 w/Interrupt *ACK.
+;  Memory - 128k to 1 MB available.
+;  RS-232 - Two ESCC Channels w/handshaking.
+;             Channel A - Console TTY
+;             37C665 PC - Auxiliary
+;           Three Additional available w/external drivers
+
+; Resources used and chip set are:
+
+;  Z182 ESCC-B - Aux Serial port (unused here)
+;  Z182 ESCC-A - TTY Console (polled)
+;  Z182 Timer0 - 50/100 mS Interrupts (ASCI1 Int)
+;                Provides ticks for time slicing
+;  Z182 Int0   - Floppy Disk Controller
+;  Z182 Int1   - SCSI (5380) (optional Interrupt)
+;  Dallas DS-1202 Clock/Calendar via Z182 Parallel bits (for TOD)
+;****************************************************************/
+
+	global	_initsys, _rdtod, __putc, _lpout, _ei, _di	; PUBlic
+	global	_IRET, _tempstack, _ub, _uget, _ugets, _uput	;   "
+	global	_ugetw, _uputw, _ugetc, _uputc, _doexec, _unix	;   "
+	global	_uzero, _osBank, _uzicom			;   "
+
+	global	_fs_init, _tty_inproc, _panic, _inint, _kprintf	; in machdep.c
+;	global	_calltrap					;   "	
+	global	_clkint2, _unix2				; in process.c
+	global	_FdcCk						; in flopasm.asz
+	global	EStart						; in emu.asz
+	global	_bcopy						; in utils.asz
+	global	_ub, _tod					; in data.c
+	global	__Lbss, __Hdata, __Lcpm22, __Hcpm22, __Bcpm22	; from linker
+
+	global	__cin  ; **HP**
+	global	_ramsize, _procmem, _maxproc;
+
+;#include <unix.h>
+;#include <config.h>
+;#include <extern.h>
+
+;#include unix.i
+
+*Include   ASMDEF.I		; Common Definitions, Ascii and CP/M
+*Include   Z180.I		; Z180 Register Mnemonics
+
+	psect	text
+
+;/*----------------------------------------------------------------*/
+;/* Perform initial system setup from cold start.  Begin by	   */
+;/* clearing all of the unitialized RAM to 0, then Initialize the  */
+;/* Z182 Interrupt Vector Table.  Interrupt Handler addresses are  */
+;/* installed at the appropriate locations in Init, and the base   */
+;/* address of the table is set in Z182 registers.		   */
+;/*    This interrupt table configuration is P112-specific!        */
+;/*----------------------------------------------------------------*/
+
+;initsys() {
+;#asm
+
+_initsys:
+	LD	HL,__Hdata	; Pt to common image in low mem (Top of Data)
+	LD	DE,0F000H	;  Common Area destination
+	LD	BC,endcom-_ub	;   and length
+	LDIR			;  ..move into position
+
+		;    /* Initialize the internal Z180 interrupt table address */
+		; NOTE: Ensure that it begins on an even 32-byte boundary!
+
+	ld	hl,itbl		; Get Address of Interrupt Table (Common Mem)
+	OUT0	(IL),L		;   Set Z182 Low Address
+	ld	a,h		; Get Page
+	ld	i,a		;  to Interrupt Register
+
+	ld	a,00010001B	; Turn Ints On and enable downcounting
+	OUT0	(TCR),A
+	ld	a,00000111B	; Activate INT0 and Interrupts
+	OUT0	(ITC),A
+	di			;   <immediately disable ints>
+
+	ld	hl,TrapEr	; Get addr of Undef Opcode Error
+	ld	a,0c3h		;  JP Opcode
+	ld	(0000),a	;   Set vector
+	ld	(0001),hl	;    for handler
+
+  	ld	de,__Lbss	; Clear all bss Memory
+	ld	hl,0F000H
+	or	a
+	sbc	hl,de		; Compute bss size
+	ld	c,l
+	ld	b,h		; Set count
+	ld	l,e
+	ld	h,d		;  Copy to source Reg
+	inc	de		;   Dest = Source + 1
+	dec	bc		;    deduct one from count for init byte
+	ld	(hl),0		; Zero the first Byte
+	ldir			;   and move it along
+
+; Size available RAM and calculate max num of processes
+
+	IN0	A,(RAMUBR)	; Upper RAM bound
+	ADD	A,1		;  to 1st invalid page (set CY)
+	RRA			;  scale and keep CY
+	IN0	L,(RAMLBR)	; Lower bound
+	SRL	L		;  scale similarly
+	SUB	L		; A = available RAM in 8kB blocks
+	LD	L,A
+	LD	H,8
+	MLT	HL		; HL = available RAM in kB
+	LD	(_ramsize),HL
+
+	IN0	A,(BBR)
+	ADD	A,10h		; Free memory starts 64k after BBR
+	LD	L,A
+	JR	C,noSpace
+	IN0	H,(RAMUBR)
+	CP	H
+	JR	NC,noSpace	; If below or equal upper RAM bound -> no space
+	ADD	A,48
+	CP	H
+	JR	NC,noSpace	; Need at least 192kB for 3 processes min
+	LD	A,H
+	ADD	A,1
+	RRA
+	SRL	L
+	SUB	L		; HL = size in 8kB blocks
+	LD	L,A
+	SRL	A
+	SRL	A
+	SRL	A
+	AND	1Fh
+	LD	E,A
+	LD	D,0
+	LD	(_maxproc),DE
+	LD	H,8
+	MLT	HL		; HL = size in kB
+	LD	(_procmem),HL
+
+;    /* Establish base of Common Memory which is always resident */
+; This *MUST* be done here since BBR might be different if read in high mem
+
+	IN0	A,(BBR)		; Get Current Bank
+	LD	(_osBank),A	;  Save for later kernel use
+
+	jp	_fs_init	; ..chain to more setup in MACHDEP.C
+
+noSpace:
+	ld	hl,noSpcMsg
+	push	hl
+	call	_kprintf
+	di
+	jr	$
+noSpcMsg:
+	defm	'Not enough RAM for UZI180, 256kB minimum required.'
+	defb	0Ah, 0
+
+;=============== Section relocated to Common Memory (F000H) =============
+; This portion of code is always in context in both User and System modes.
+; Critical items are:
+;    User Data Block (udata)
+;    User Stack (from end of udata thru top of _ub)
+;    Z180 Interrupt Table (because we don't know where we are when interrupted)
+;    Interrupt Handlers (or at least vectors) which are "bank aware" if they
+;		chain to code in the system area
+;    Temporary Stack for use in process swapping or other temporary purposes
+
+	 psect  common
+_ub:				; udata block padded up to 512 bytes (256 Wds)
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+			; Kernel stack ends here
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	defw	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+			; Timer Interrupt stack ends here
+
+; NOTE: The interrupt table must start on a 32-byte boundary
+
+itbl:			; INT0 - Uncomment Only one of these first two
+;;--	defw	_flopint	; INT0    - Floppy Controller Interrupt
+	defw	_badint		;;-- For Polled Floppy
+;;--	defw	_scsint		; INT1    - SCSI Controller Interrupt
+	defw	_badint		;;-- for Polled or No SCSI
+	defw	_timer		; Timer0  - Process Tick
+	defw	_badint		; Timer1  - (unused)
+	defw	_badint		; DMA Ch0 - (unused)
+	defw	_badint		; DMA Ch1 - (unused)
+	defw	_badint		; CSIO    - (unused)
+	defw	_badint		; ASCI0   - (unused)
+	defw	_badint		; ASCI1   - (unused)
+itblen	 equ  $-itbl
+;#endasm
+;}
+
+
+;/*--------------- Interrupt Handler Routines --------------*/
+
+TrapEr:
+	di			; immediately disable interrupts
+
+usemon	equ	1		; set this to 1 to include debug monitor
+
+	COND	usemon .eq. 0
+
+	ld	(trap_sp),sp
+	in0	a,(ITC)
+	ld	b,a
+	and	80h		; TRAP bit set?
+	jr	z,no_trap
+	pop	hl		; get address where trap occurred from stack
+	ld	c,(hl)		; get opcode
+	dec	hl		; illegal instr is at PC-1...
+	ld	a,b
+	and	40h		;   UFO bit set?
+	jr	z,no_ufoadj	; ...or at PC-2 if UFO was set
+	dec	hl
+no_ufoadj:
+	ex	de,hl
+	ld	hl,trapmsg
+TrapP:
+	ld	sp,0000
+	ld	b,0
+	push	bc		; push opcode into stack
+	in0	a,(BBR)		; get current bank #
+	ld	c,a
+	ld	a,(_osBank)
+	out0	(BBR),A		;  Get System Bank into context
+	push	bc		; push bank #
+	ld	bc,(trap_sp)
+	push	bc		; push SP value
+	push	de		; push Trap addr
+	push	hl		; push msg addr
+	call	_kprintf	;  Print message
+TrapL:	di
+	jr	TrapL		; ..should never get here, but...
+
+no_trap:
+	pop	hl		; *maybe* we were called from this address
+	dec	hl
+	ld	c,(hl)		; get the instruction code (rst 0?)
+	ex	de,hl
+	ld	hl,notrapmsg
+	jr	TrapP		; go print message
+
+trapmsg:
+	defm	'Illegal instruction trap at PC=0x%x, SP=0x%x, BBR=0x%x [0x%x]'
+	defb	0AH, 0
+
+notrapmsg:
+	defm	'Unexpected trap at PC=0x%x, SP=0x%x, BBR=0x%x [0x%x]'
+	defb	0Ah, 0
+
+trap_sp:
+	defs	2
+
+	ENDC
+	COND	usemon
+
+	global	trap_ept	; in z180mon.asz
+	jp	trap_ept
+
+*Include z180mon.asz
+
+	ENDC
+
+;badint()
+;{
+;    panic ("Bad Int");
+
+_badint: ld	hl,bimsg
+	push	hl
+	call	_panic
+	ret			; ..should never get here
+
+bimsg:	defm	'Bad Int'
+	defb	0
+;}
+
+
+;/*---------------------- Timer Interrupt Handler ----------------------*/
+;/* This is activated roughly every 50 or 100 mS (depending on the timer
+;   value set on initialization) to control timeouts.  It only runs when
+;   interrupts are enabled, so is subject to some error.  Set the correct
+;   value in "config.h" for the desired rate depending on processor clock
+;   speed for your configuration.
+
+;   NOTE: This routine also provides a timer function to turn floppy disk
+;   motors off after a pre-determined time (for the DB8473 mod) and can
+;   also provide periodic sampling of the _tty routines for systems which
+;   do not have interrupts on the serial (tty) ports.
+; */
+;timer()
+;{
+;#asm
+
+_timer:	di			; No ints here
+	ex	af,af'		; SAVE ALL REGS here !!
+	push	af
+	ex	af,af'
+	exx
+	push	bc
+	push	de
+	push	hl
+	exx
+	push	af
+	push	bc
+	push	de
+	push	hl
+	push	ix
+	push	iy
+
+	IN0	A,(TCR)
+	IN0	A,(TMDR0L)
+	IN0	A,(TMDR0H)	; Clear the Interrupt
+
+; /**HP**/
+
+	ld	a,(_ub+OBC)
+	or	a
+	jp	nz,_IRET	; can't reenter timer int for this task context!
+	inc	a
+	ld	(_ub+OBC),a
+
+	LD	(ISTACK-2),SP	; Save Entry Stack Ptr
+	LD	SP,ISTACK-2	;   set New
+
+	IN0	A,(BBR)		; Read entry Bank Buffer Reg
+	push	af		;   (save for exit)
+
+	ld	a,(_osBank)	;  Get System Bank
+	OUT0	(BBR),A		;   bring into Context
+
+;   inint = 1;  /**HP**/
+
+	ld	a,1
+	ld	(_inint),a
+
+	CALL	_FdcCk		; Adjust FDC timers, stop motor if timeout
+
+	call	__cin		; Check keyboard, process if char(s)
+
+; We call the tick service routine in "process.c" in lieu of a real int.
+
+	call	_clkint2;
+
+; Subroutine service() incorporated within this portion of the handler.
+; It is sampled every 100 mS, with calltrap() called as needed.
+
+;   inint = 0;  /**HP**/
+
+	xor	a
+	ld	(_inint),a
+
+	pop	af		; Get entry Bank
+	OUT0	(BBR),A		;  Bring back into Context
+	LD	SP,(ISTACK-2)	;   restore entry Stack Ptr
+
+	xor	a
+	ld	(_ub+OBC),a
+
+;    /* Deal with a pending caught signal, if any */
+;    if (!udata.u_insys)
+
+	ld	a,(_ub+OSYS)
+	or	a		; In Kernel Mode?
+	jr	nz,tdone	; ..jump if Not..no trap check
+
+;    {
+;        inint = 0;
+;
+;        calltrap();
+
+	call	_calltrap	; Handle signal
+;    }
+
+tdone:
+	JP	_IRET		;  ..exit, restoring all regs, enable Ints
+
+;#endasm
+;}
+
+;------------------------------------------------------------
+; Call signal handler in user space. Process must have been
+; swapped in, and the correct bank selected
+
+;calltrap()
+;{
+_calltrap:
+;	if (udata.u_cursig)
+
+	ld	hl,(_ub+OCURSIG)
+	ld	a,h
+	or	l
+	ret	z
+
+;	{
+;	    cursig = udata.u_cursig;
+;	    curvec = udata.u_sigvec[cursig]
+
+	push	hl		; save cursig
+	add	hl,hl
+	ld	de,_ub+OSIGVEC
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)		; get sigvec[cursig] into de
+
+;	    udata.u_cursig = 0;
+
+	ld	bc,0
+	ld	(_ub+OCURSIG),bc
+
+;	    udata.u_sigvec[cursig] = SIG_DFL;
+
+;	ld	bc,SIG_DFL	; SIG_DFL = 0, bc is still 0 from above
+	ld	(hl),b
+	dec	hl
+	ld	(hl),c
+
+;	ei();
+;	(*curvec)(cursig);
+;	di();
+
+	push	de
+	call	_ei
+	pop	de
+
+;	pop	hl		; restore cursig
+;	push	hl		; push cursig
+	ld	hl,ret1
+	push	hl		; push return address
+
+	ex	de,hl
+	jp	(hl)		; call curvec
+ret1:
+	pop	hl
+
+	call	_di
+	ret
+
+;       }
+;}
+
+
+;/*----------------------------------------------------------*/
+;/* Send a single character to the TTY port specified by the
+;   minor number, waiting if not ready.  This routine does not
+;   mask the MSB before sending, so it is possible to send
+;   8-bit characters to the console.  Output handshaking is
+;   also not provided which may result in over-driving the
+;   terminal at higher speeds.
+; */
+; _putc (int minor, char c)
+
+__putc:	POP	HL		; Return Address
+	POP	DE		;  minor
+	POP	BC		;   c
+	PUSH	BC		; Keep Parms on stack
+	PUSH	DE
+; {
+;     if (minor == 2) {
+
+	DEC	E		; 2
+	DEC	E		;   -> 0?
+	JR	NZ,put1		; ..jump if Not 2 (assume 1)
+
+;         /* tty2 (minor = 2) is desired, which is Serial on SMC37C665 */
+;         while (!(in (0x9d)&0x20)) ;
+
+;;	 COND  (RTSCTS .eq. TRUE)
+put2:
+;;	IN0	A,(_MMSR)	; Else Get Port 1 Modem Status
+;;	BIT	4,A		; Clear-To-Send?
+;;	LD	A,0		;  (prepare for No)
+;;	JR	Z,put20		; ..jump if Not
+;;	 ENDC		;Rtscts
+	IN0	A,(_LSR)	; Read Status Reg
+put20:	AND	20H		;  Mask Bit of interest
+	JR	Z,put2		; ..loop if not
+
+;         out (c, 0x98);
+
+	OUT0	(_THR),C	; Else send char to Xmt Holding Reg
+	JP	(HL)		;   "return"
+;     }
+;     else {
+
+;	/* tty1 (minor = 1) is ESCC-A on the Z182, normally the Console */
+;        while (!(in (0xe0)&04)) ;
+
+put1:	IN0	A,(SCCACNT)	; Read Status
+	AND	04H		;  Ready?
+	JR	Z,put1		; ..loop to wait if Not
+
+;        out (c, 0xe1);
+
+	OUT0	(SCCAD),C	; Send Char
+	JP	(HL)		;   jump to Return
+;     }
+; }
+
+;###############################################################
+; Keyboard (TTY) input routines for P112.  This routine checks
+; to see if a character is ready, returning if Not.  If ready, it
+; processes the keyboard character, looping until no more chars
+; are ready.
+; NOTE: Since the console port of the P112 operates in Polled mode
+;	this routine is "called" from the Interrupt timer every
+;	100 mS to flush the received buffer and process characters.
+;	It then returns to the Clock sampling loop.
+;--------------------------------------------------------------
+
+__cin:	IN0	A,(SCCACNT)	; Read Status Port
+	AND	01H		;  mask relevant bit
+	LD	L,A		;   (return C or Assy parms)
+	LD	H,A
+	RET	Z
+	IN0	A,(SCCAD)	; Get Byte that is ready
+	AND	7FH		; Mask off MSB
+	LD	L,A
+	LD	H,0		;  make into word
+	PUSH	HL
+	LD	L,1		;    minor = 1
+	PUSH	HL
+	CALL	_tty_inproc	;   massage character in C (devtty.c)
+	POP	BC		;    (clr stack on return)
+	POP	BC
+	JR	__cin		; ..loop to check if more chars ready
+
+
+;/*---------------- Real Time Clock Interface -----------------*/
+;/* Dallas DS-1202 Real-Time Clock/Calendar on the D-X Designs Pty Ltd P112.
+;   Read the Clock Time/Date to a buffer area in Memory.  Seven bytes (six
+;   used) are read in burst mode from the clock chip, one bit at a time via
+;   three bits from one of the Z-182 parallel ports.  The clock is accessed
+;   serially (LSB first) one bytre at a time with a command byte being
+;   written to begin the Read/Write.  Burst Mode is used with a 0BFH byte
+;   for Reading, 0BEH for Writing as the Command.  Clock Setting clears the
+;   Write Protect bit before setting, and resets the chip to Read-Only when
+;   finished.  The Entire Date/Time string is eight bytes read as:
+;
+;       Sec    Min    Hour   Day    Mon    DOW    Year   WProt
+;                   (12/24)                              (MSB)
+;
+;   In the P112 implementation, the DOW field is not used, and the 12/24
+;   hour bit is always set to 24-hour mode by setting the MSB to 1.  The
+;   bytes are stored in the local buffer as:
+;
+;       Year   Mon    Day    Hour   Min    Sec    DOW
+;                                              (Error Flag)
+;
+;   After reading the clock to a local buffer, the date/time is converted
+;   to the correct UZI (MS-DOS) format and stored in the _tod variable.
+;
+; NOTE: Since this routine is only called from C code, there is no need to
+;	preserve registers around it.
+;*/
+
+;static char *timstk[14];    /* local stack in hi-memory */
+;static char *lcltim[7];     /* local buffer for date/time reading */
+
+;/* Read Hardware Clock/Calendar, conbine to double-word form */
+;/* Update global time of day */
+;rdtod()
+;{
+
+_rdtod:	di			; NO INTERRUPTS in this routine
+	ld	(_timstk+12),sp	; Store entry SP
+	ld	sp,_timstk+12	;   set ours
+			; Set up chip for reading
+	ld	bc,DDRA		; Address parallel Port A Control
+	in	a,(c)		; Read Settings
+	set	0,a		;  Data Line to Input
+	out	(c),a		;   and Set
+	inc	bc		; Address Parallel Port A (DRA)
+	in	a,(c)		; Fetch settings
+	res	1,a		;  Clk LO to Start
+	out	(c),a		;   (set)
+	set	2,a		;    Clear Reset to HI
+	out	(c),a		;     (set)
+
+; Command the DS-1202 for Burst Read of Clock
+
+	ld	a,0bfh		; Load the Burst Clock Read Command
+	call	Wr1202		;  and Send it
+
+; Read the Clock Data.  D=Byte Count/Index
+
+	ld	d,0		; Init Byte Counter
+	ld	hl,_lcltim+5	;   Pt to Secs byte
+RdTim0:	push	hl		; Save Ptr
+	ld	e,8		; Gather 8 bits for a byte
+RdTim1:	in	a,(c)		; Read Port
+	res	1,a		;  Clock LO
+	out	(c),a		;   Set
+	nop			;    (settle)
+	in	a,(c)		;     Read Bit to LSB
+	rrca			; Data Bit to Carry
+	rr	l		;  to MSB of Accum
+	rlca			;   restore Parallel Port bits
+	set	1,a		; Clock HI
+	out	(c),a		;   set
+	dec	e		; Byte Done?
+	jr	nz,RdTim1	; ..jump if Not
+
+	ld	e,l		; Else Get Byte
+	pop	hl		; Restore Ptr to Dest
+	ld	a,d		; Get index
+	cp	5		; Day-Of-Week?
+	jr	nz,RdTim3	; ..jump if No to Save
+	ld	a,e		; Else get DOW/Error Flag
+	ld	(_lcltim+6),A	;  save for later tests
+	ld	a,d		;    (restore index)
+	jr	RdTim2		; ..continue with loop
+
+RdTim3:	ld	(hl),e		; Save value in output string
+	dec	hl		;  back down to previous byte in output
+RdTim2:	inc	d		;   increment index
+	cp	6		; Did we just save Year?
+	jr	nz,RdTim0	; ..get another byte if Not
+			; Disable the Clock for further access
+	in	a,(c)		; Fetch Parallel Port
+	set	1,a		;  Clk to HI
+	out	(c),a
+	res	2,a		;   Reset Active LO
+	out	(c),a
+
+	ld	a,(_lcltim+6)	; Get DOW/Error Flag (should be in 1..7)
+	or	a		; Error of First Type (00)?
+	jr	z,noclock	; ..quit if Yes
+	inc	a		; Error of Second Type (FF)?
+	jr	z,noclock	; ..quit if Yes
+
+;    tod.t_date = tread(DAY) | (tread(MON)<<5) | (YEAR<<9);
+
+	ld	hl,_lcltim	; Pt to years field of day/date
+	ld	a,(hl)		;  fetch
+	inc	hl		;   (advance to month)
+	call	bcd2bin
+	ADD	A,A
+	LD	D,A
+	LD	E,0		;    Store (Years * 512) -or- (Years << 9)
+	ld	a,(hl)		; Fetch month
+	inc	hl		;  (advance to day)
+	call	bcd2bin
+	ld	c,a
+	LD	B,32
+	MLT	BC		;   (Mon * 32) -or- (Mon << 5)
+	ex	de,hl
+	add	hl,bc		;    add month to shifted year
+	LD	A,(DE)		; Fetch day
+	INC	DE		;  (advance to hrs)
+	call	bcd2bin
+	OR	L
+	LD	L,A		;   Add Day Number
+	ld	(_tod+2),hl	;    Save in _tod.t_date
+	EX	DE,HL		; Restore Ptr to HL
+
+;    tod.t_time = (tread(SECS)>>1) | (tread(MINS)<<5) | (tread(HRS)<<11);
+
+	ld	a,(hl)		; Fetch Hours
+	inc	hl		;  (advance to mins)
+	call	bcd2bin
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	D,A
+	LD	E,0		;   (Hrs * 2048) -or- (Hrs << 11)
+	ld	a,(hl)		; Fetch Minutes
+	inc	hl		;  (advance to secs)
+	call	bcd2bin
+	ld	c,a
+	LD	B,32
+	MLT	BC		;   (Mins * 32) -or- (Mins << 5)
+	ex	de,hl
+	add	hl,bc		;    add mins to shifted hrs
+	LD	A,(DE)		; Fetch Secs
+	call	bcd2bin
+	srl	a		; Shift right one to strip LSB
+	OR	L
+	LD	L,A		;  Add (Secs / 2) -or- (Secs >> 1)
+	ld	(_tod),hl	;  save in _tod.t_time
+
+timex:	ld	sp,(_timstk+12)	; Restore entry Stack
+	call	_ei
+	ret			;   return!
+
+
+noclock: ld	hl,0
+	ld	(_tod),hl
+	ld	(_tod+2),hl
+	jr	timex
+
+;}
+
+; Helper file for converting Time/Date in above routine
+; return ( 10*((n>>4)&0x0f) + (n&0x0f);
+
+bcd2bin: push	de
+	ld	d,a
+	and	0f0h
+	ld	e,a
+	ld	a,d
+	and	0fh
+	srl	e
+	add	a,e
+	srl	e
+	srl	e
+	add	a,e
+	pop	de
+	ret
+
+;.....
+; Write the Byte in A to the clock (used to send Command)
+
+Wr1202:	ld	l,a		; Store byte
+	ld	e,8		;  set bit count
+	IN0	A,(DDRA)	; Get Def'n Reg contents
+	res	0,a		;  Data Line to Output
+	OUT0	(DDRA),A	;   (set)
+
+Wr120L:	in	a,(c)		; Read Parallel Port
+	res	1,a		;  Clk LO
+	out	(c),a		;   (set)
+	srl	a		; (clear LSB)
+	rr	l		; Data Byte LSB to Carry
+	rla			;  then to Parallel Port LSB
+	out	(c),a		;   (set)
+	set	1,a		; Clk HI
+	out	(c),a		;  (set)
+	dec	e		; Eight Bits Sent?
+	jr	nz,Wr120L	; ..loop if Not
+
+	IN0	A,(DDRA)
+	set	0,a		; Set Port to Data IN
+	OUT0	(DDRA),A
+	ret
+
+
+;/*-----------------------------------------------------*/
+;/* Send a single character to the Printer port, waiting if
+;   it is not ready.  The output characters are not masked
+;   by this routine so it is possible to send 8-bit data.
+; */
+
+;lpout(c)
+;char c;
+;{
+;    while (!(in(0x8d) & 0x80)) ;
+
+_lpout:	pop	hl		; Get return addr
+_listw:	in0	a,(SPORT)	; Read Port status (8dh)
+	rla			;  Rdy bit to Carry
+	jr	nc,_listw	; ..loop if Not Ready
+
+;    out (c,0x8c);
+
+	pop	bc		; Get character
+	push	bc		;  (keeping stack balanced)
+	out0	(DPORT),c	; send to data latch (8ch)
+
+;    out (0x0d,0x8e);
+
+	ld	a,0dh
+	out0	(CPORT),a	;  toggle strobe (8eh)
+	ex	(sp),iy		;   (let it settle)
+	ex	(sp),iy
+
+;    out (0x0c,0x8e);
+
+	ld	a,0ch
+	out0	(CPORT),a	;   clear strobe
+	jp	(hl)		;  ..return
+;}
+
+;/************** Miscellaneous Support Routines ***************/
+;.....
+; Setup Temporary System Stack to use during context switches
+;  (Area reserved at end of this module)
+
+_tempstack:
+	pop	hl		; Fetch Return Address
+	ld	sp,tstk+tmplen	;  Set temp Stack to top of scratch area
+	jp	(hl)		; .."return"
+
+
+;-------------------------------------------------------------
+; Unix System CALL Trap Routine.  This entry point is reached when a
+; process requests Unix Kernel services with a RST 30H instruction.
+
+_unix:	di			; No Ints while we change Banks & Stack
+	ex	af,af'
+	push	af
+	ex	af,af'
+	exx
+	push	bc
+	push	de
+	push	hl
+	exx
+	push	af
+	push	bc
+	push	de
+	push	hl
+	push	ix
+	push	iy
+
+;    udata.u_retloc = (char *)ugetw (udata.u_sp);        /* uret */
+
+	LD	(_ub+ORET),SP	; Save return Stack Ptr for Task
+
+	LD	HL,+22		; (--Fudged value to index Formal Parms--)
+	ADD	HL,SP		; Pt to Return Address + 1 Word
+	LD	A,(HL)		;  fetch Function CALL Number
+	LD	(_ub+OCALL),A	;   save
+
+;                        /* Copy args from user data space */
+;    udata.u_argn3 = ugetw (udata.u_sp+4);        /* argn3 */
+;    udata.u_argn2 = ugetw (udata.u_sp+3);        /* argn2 */
+;    udata.u_argn1 = ugetw (udata.u_sp+2);        /* argn1 */
+;    udata.u_argn  = ugetw (udata.u_sp+1);        /* argn  */
+
+	INC	HL		; Advance to argn
+	INC	HL
+	LD	BC,8		;  move 4 Words
+	LD	DE,_ub+OARGN	;   to _ub+u_argn
+	LDIR			;    (from unix2 in process.c)
+
+	LD	SP,KSTACK	; Set High Stack for Kernel processing
+
+	LD	A,(_osBank)	; Get OS Bank Number
+	OUT0	(BBR),A		;  Bring OS bank into Context
+
+	call	_unix2		; Continue processing
+
+	; Shove return values where they will eventually get popped to regs
+
+	DI			; No Ints while we change Banks & Stack
+
+	LD	A,(_ub+OPAGE)	; Get Exit Page
+	LD	SP,(_ub+ORET)	;  Restore Stack Ptr value for User Return
+	OUT0	(BBR),A		;   Bring it into Context
+
+	push	hl
+	call	_calltrap	; check for signals and call the handler
+	pop	hl
+
+	POP	IY		; Start to restore status
+	POP	IX
+	INC	SP		;  Skip HL restore
+	INC	SP		;   (value already in HL)
+	POP	DE
+	LD	BC,(_ub+OERR)	; Get Error result
+	LD	A,B
+	OR	C		;  Set NZ if Error
+	POP	BC
+	INC	SP		;   (skip AF restoration)
+	INC	SP
+	JR	Z,_IRet0	; ..jump if No Error, Carry Clear
+	SCF			; Else Set Carry for Error
+	LD	HL,(_ub+OERR)	;  Return Error Number as RetVal
+	JR	_IRet0		; ..and jump to restore rest & Return
+
+;-----------------------------------------------------------
+; This is the common interrupt-scall-trap return routine.
+; It restores all registers.
+
+_IRET:	pop	iy
+	pop	ix
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+_IRet0:	exx			; Enter here for Unix2 Return
+	pop	hl
+	pop	de
+	pop	bc
+	exx
+	ex	af,af'
+	pop	af
+	ex	af,af'
+	ei			;..Return to User allowing Ints Now
+	ret
+
+
+;/*-----------------------------------------------------*/
+; extern int unix();
+; doexec ((int *)envp)
+; {
+
+_doexec: di			; Stop Ints here
+	LD	A,(_uzicom)
+	OR	A		; Is this an UZI App?
+	JR	NZ,ExeUZI	; ..jump if Yes
+
+	LD	HL,__Hcpm22	; Else position Emulator
+	LD	DE,__Lcpm22
+	OR	A
+	SBC	HL,DE		; Compute Length
+	INC	HL		;  (+1 for safety)
+	PUSH	HL		; Pass
+	LD	HL,EStart	;   (EA00)
+	PUSH	HL		;  Dest in proc
+	LD	HL,__Bcpm22+100H ;    (correct for TPA offset)
+	PUSH	HL		;   Src in System
+	CALL	_uput		;    Get module
+	POP	BC
+	POP	BC
+	POP	BC
+
+ExeUZI:	pop	hl		;  Remove Return Address
+	pop	hl		;   Ptr to Argv[] now on top-of-stack
+
+	LD	A,(_ub+OPAGE)	; Fetch Task bank #
+	OUT0	(BBR),A		;  Bring task bank into Context
+
+	LD	SP,HL		; Initialize User Stack below params
+
+	xor	a		;  show that we are in User Mode
+	ld	(_ub+OSYS),a	;   by clearing OS flag
+
+	ld	a,0c3h		; Set Restart Vector for SYStem Calls
+	ld	(0030h),a	;  (RST 30H is Unix Function call vector)
+	ld	hl,_unix
+	ld	(0031h),hl
+	ld	(0000h),a	; Set vector for Illegal Instructions
+	ld	hl,TrapEr	;   to Our Trap Handler
+	ld	(0001h),hl
+
+	; At this point, we check on the type of executable loaded.  If it
+	; is a CP/M type (No "UZI" string detected), then load the CP/M
+	; emulator module in the process' memory and execute there.
+
+	LD	A,(_uzicom)
+	OR	A		; Uzi Executable?
+	JR	Z,ExeCPM	; ..jump if No
+	ei			; Allow Ints again
+	jp	0100H		; ..begin UZI task execution
+
+ExeCPM:	EI
+	JP	EStart		; Execute Bios Cold Boot
+; }
+
+
+;/*-----------------------------------------------------*/
+; /* Get a string from User to kernel Space up to count chars
+;  * in length.  Addresses > Common base fetch from Common.
+;  * This module MUST be in Common memory since it transfers
+;  * a character-at-a-time by switching banks in context.
+;  * Function called as: ugets (SourceAdr, DestAdr, MaxLength).
+;  * Exit: HL = 0 if Ok, <>0 (hopefully) if string too long.
+;  */
+; ugets (char *uptr, char *sptr, unsigned count);
+
+_ugets:	ld	hl,+7
+	add	hl,sp		; Pt to Hi-byte of count
+	push	iy
+	ld	b,(hl)
+	dec	hl
+	ld	c,(hl)		; Get count to BC
+	dec	hl
+	ld	d,(hl)
+	dec	hl
+	ld	e,(hl)		;  Destination to DE (always in kernel space)
+	push	de
+	pop	iy		;    (transfer to iy)
+	dec	hl
+	ld	a,(hl)
+	dec	hl
+	ld	l,(hl)
+	ld	h,a		;   Source to HL
+	ld	a,(_osBank)	;   (assume Yes by loading kernel base)
+	ld	e,a		;     set dest bank to kernel
+	ld	a,(_ub+OPAGE)	; Else load User Bank as source
+	ld	d,a		;   save source bank
+	LD	A,R
+	PUSH	AF		;    (save Interrupt Flag as B2)
+	IN0	A,(BBR)		; Get Current Bank
+	push	af		;   save for exit
+
+	di			; No Ints while we transfer the string
+0:	OUT0	(BBR),D		; Switch to User Bank
+	ld	a,(hl)		;  Get a byte
+	inc	hl		;   bump ptr
+	OUT0	(BBR),E		; Switch to kernel Bank
+	ld	(iy+0),a	;  save byte
+	inc	iy		;   bump ptr
+	or	a		; End?
+	jr	z,1f		; ..jump to exit if Yes
+
+	dec	bc		; Dec max count
+	ld	a,b
+	or	c		; Destination full?
+	jr	nz,0b		; .loop if Not
+	dec	iy		; Else back up destination
+	ld	(iy+0),0	;  Terminate dest string
+	jr	2f		; ..exit w/hl hopefully non-zero
+
+1:	ld	hl,0		; Return 0 if Ok
+2:	pop	af
+	OUT0	(BBR),A		; Bring Entry Bank back in context
+	POP	AF		;  Restore Int Flag in B2
+	POP	IY		;   and Regs
+	AND	04H		; Were Ints ON at Entry?
+	CALL	NZ,_ei		;   If so, activate if Not insys
+	ret
+
+
+;/*-----------------------------------------------------*/
+; Move block of data from System to User Space
+;   uput (char *sptr, char *uptr, unsigned nbytes)
+
+_uput:	pop	hl		; Ret Addr
+	pop	de		; Source (*sptr)
+	pop	bc		;  Dest (*uptr)
+	ex	(sp),hl		;   Count to HL (nbytes)
+	LD	A,R
+	PUSH	AF		;    (Save Int Flag in B2)
+	push	hl		;    Save Count
+	ld	a,(_ub+OPAGE)	; Get Dest Bank
+	ld	l,a		;  (dest = LBC)
+	ld	a,(_osBank)	;   System Bank (Source)
+	JR	_uget0		;  ..continue in common code below
+
+;/*-----------------------------------------------------*/
+; Move block of data from User to System space.
+;   uget (char *uptr, char *sptr, unsigned nbytes);
+
+_uget:	pop	hl		; Ret Addr
+	pop	de		; Source (*uptr)
+	pop	bc		;  Dest (*sptr)
+	ex	(sp),hl		;   Count to HL (nbytes)
+	LD	A,R
+	PUSH	AF		;    (Save Int Flag in B2)
+	push	hl		;    Save Count
+	ld	a,(_osBank)	; Get Dest Bank
+	ld	l,a		;  (dest = LBC)
+	ld	a,(_ub+OPAGE)	;   User's Bank (Source)
+_uget0:	ld	h,a		;    (source = HDE)
+	di			; NO INTERRUPTS while we play around here!
+	OUT0	(SAR0L),E	; Set Source LSB
+	OUT0	(SAR0L+3),C	;   and Dest LSB
+	PUSH	HL		; Save both bank BBR values
+	LD	H,0
+	ADD	HL,HL		;  while we massage Dest Bank #
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	C,B		; Position Dest (MSB)
+	LD	B,0
+	ADD	HL,BC		;  Add processed Bank to Dest Addr MSB
+	OUT0	(SAR0L+4),L	;   Set Dest MSB
+	OUT0	(SAR0L+5),H	;    and Bank
+	POP	HL		; Restore Bank BBR values
+	LD	L,H
+	LD	H,0		; position
+	ADD	HL,HL		;  and massage Source Bank #
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	E,D		; Position Source (MSB)
+	LD	D,0
+	ADD	HL,DE		;  Add processed Bank to Source Addr MSB
+	OUT0	(SAR0L+1),L	;   Set Source MSB
+	OUT0	(SAR0L+2),H	;    and Bank
+
+	POP	HL		; Restore Count
+	ld	a,h
+	or	l		; Anything to move?
+	jr	z,ugetX		; ..quit here if Not
+
+	OUT0	(SAR0L+6),L	;   Set Count LSB
+	OUT0	(SAR0L+7),H	;    and MSB
+
+	LD	A,00000010B	; Set DMA Mode control to Burst Mode
+	OUT0	(DMODE),A
+	LD	A,40H		; Enable DMA0
+	OUT0	(DSTAT),A	; ..and move the block
+
+ugetX:	POP	AF		; Restore Int Flag
+	EX	(SP),HL		; Ret Addr to HL, junk to stack
+	PUSH	HL		;  param
+	PUSH	HL		;   space
+	AND	04H		; Were Ints ON at entry?
+	CALL	NZ,_ei		;   If so, activate if Not insys
+	JP	(HL)		;  "return"
+
+
+;/*-----------------------------------------------------*/
+; Zero a block of data at given address in User Space
+;   uzero (char *uptr, unsigned nbytes);
+
+_uzero:	pop	de		; Ret Addr
+	pop	hl		;  uptr
+	pop	bc		;   nbytes
+	push	bc		;    (keep Stack constant)
+	push	hl
+	push	de
+	ld	a,b
+	or	c		; anything to clear?
+	ret	z		; return if not
+	IN0	A,(BBR)		; Get Current Bank
+	ld	e,a		;  (save for exit)
+	LD	A,R
+	LD	D,A		;    (save Int flag as B2)
+	di			;   No INTS while we switch banks
+	ld	a,(_ub+OPAGE)
+	OUT0	(BBR),A		; Bring User Bank in context
+	ld	(hl),0		; Zero the first byte
+	dec	bc		; count - 1
+	ld	a,b
+	or	c
+	jr	z,gpXit		; exit if only one byte to zero	
+	push	de		; save int flags and sys bank
+	ld	e,l
+	ld	d,h		;  copy the address
+	inc	de		;  + 1
+	ldir			; otherwise copy the 0 over the rest
+	pop	de		; restore int flags and sys bank
+	jr	gpXit
+
+
+;/*-----------------------------------------------------*/
+; Get a Word (16-bits) of data from Address in User Space
+;   ugetw (char *uptr) {
+;       int w;
+;
+;       uget (uptr, &w, sizeof (int));
+;       return (w);
+;   }
+
+_ugetw:	pop	de		; Ret Addr
+	pop	hl		;  &w
+	push	hl		;   (keep Stack constant)
+	push	de
+	IN0	A,(BBR)		; Get Current Bank
+	ld	e,a		;  (save for exit)
+	LD	A,R
+	LD	D,A		;    (save Int flag as B2)
+	di			;   No INTS while we switch banks
+	ld	a,(_ub+OPAGE)
+	OUT0	(BBR),A		; Bring User Bank in context
+	ld	a,(hl)		;  fetch Word (lo)
+	inc	hl
+	ld	h,(hl)		;   fetch (hi)
+	ld	l,a		; Position return value
+	jr	gpXit		; ..exit thru common code
+
+
+;/*-----------------------------------------------------*/
+; Put a Word (16-bits) of data to Address in User Space
+;   uputw (int w, char *uptr) {
+;       uput (&w, uptr, sizeof (int));
+;   }
+
+_uputw:	pop	de		; Ret Addr
+	pop	bc		;  &w
+	pop	hl		;   uptr
+	push	hl		;    (keep Stack constant)
+	push	bc
+	push	de
+	IN0	A,(BBR)		; Get Current Bank
+	ld	e,a		;  (save for exit)
+	LD	A,R
+	LD	D,A		;    (save Int flag as B2)
+	di			;   No INTS while we switch banks
+	ld	a,(_ub+OPAGE)
+	OUT0	(BBR),A		; Bring User Bank in context
+	ld	(hl),c
+	inc	hl
+	ld	(hl),b		;   store the word
+gpXit:	OUT0	(BBR),E		;     Restore Entry Bank to context
+	BIT	2,D		; Were Ints ON at entry?
+	JR	NZ,_ei		;  Activate Ints if On and Not insys
+	ret			;   quit
+
+
+;/*-----------------------------------------------------*/
+; Get a Byte of data from Address in User Space
+;   ugetc (char *uptr) {
+;       char c;
+;
+;       uget (uptr, &c, 1);
+;       return (c);
+;   }
+
+_ugetc:	pop	de		; Ret Addr
+	pop	hl		;  &w
+	push	hl		;   (keep Stack constant)
+	push	de
+	IN0	A,(BBR)		; Get Current Bank
+	ld	e,a		;  (save for exit)
+	LD	A,R
+	LD	D,A		;    (save Int flag as B2)
+	di			;   No INTS while we switch banks
+	ld	a,(_ub+OPAGE)
+	OUT0	(BBR),A		; Bring User Bank in context
+	ld	l,(hl)
+	ld	h,0
+	jr	gpXit		; ..exit thru common code
+
+
+;/*-----------------------------------------------------*/
+; Put a Byte of data to Address in User Space
+;   uputc (int c, char *uptr) {
+;       uput (&c, uptr, 1);
+;   }
+
+_uputc:	pop	de		; Ret Addr
+	pop	bc		;  c
+	pop	hl		;   uptr
+	push	hl		;    (keep Stack constant)
+	push	bc
+	push	de
+	IN0	A,(BBR)		; Get Current Bank
+	ld	e,a		;  (save for exit)
+	LD	A,R
+	LD	D,A		;    (save Int flag as B2)
+	di			;   No INTS while we switch banks
+	ld	a,(_ub+OPAGE)
+	OUT0	(BBR),A		; Bring User Bank in context
+	ld	(hl),c		;  store the byte
+	jr	gpXit		; ..exit thru common code
+
+
+;/*-----------------------------------------------------*/
+;/* Disable interrupts */
+;di()
+;{
+;#asm
+_di:	di
+;#endasm
+	ret
+;}
+
+;/*-----------------------------------------------------*/
+;/* Enable interrupts if we are not in service routine */
+;ei()
+;{
+;    if (inint)
+
+_ei:	ld	a,(_inint)
+	or	a
+
+;        return;
+
+	ret	z		; ..in Service routine, leave disabled
+	ei			; else enable ints
+;}
+	ret
+
+;***************************************************************
+;		     D A T A    A R E A
+;***************************************************************
+
+_uzicom: DEFW	1		; Executable Type (0 = CP/M, <>0 = UZI)
+_osBank: DEFB	0		; BBR Register value for Kernel "in Context"
+_timstk: defs	14		; Local Stack for TOD Reading
+_lcltim: defs	7		; Local Buffer for Time Conversions
+tmplen	  equ  100		; Length of Temp Stack
+tstk:	 defs	tmplen		; Temp Stack Space in Hi-Memory
+endcom:

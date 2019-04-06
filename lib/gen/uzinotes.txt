@@ -1,0 +1,5 @@
+- excluded sbrk.as
+- added memchr.as
+- added cseek.c
+- added memmove.as
+- commented out tolower/toupper macro from ctype.h (was incorrect)
