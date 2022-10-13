@@ -1,5 +1,0 @@
-c -o -c -v insboot.c
-zas -n loader.asz
-link <linkldr
-link <linkins
-

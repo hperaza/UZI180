@@ -1,0 +1,383 @@
+; Boot loader for P112 UZI180 GIDE hard disks.
+; This is the secondary loader that resides on the boot block
+; of the partition.
+; Copyright (C) 2004, Hector Peraza
+
+	psect	text
+
+*include z180.i
+
+himem	equ	0C000h
+uzi	equ	100h
+cmdline	equ	80h
+
+boot:
+	jp	b1
+
+	defw	ldr - boot + datofs
+	defw	ldr - boot + hddat
+
+b1:	ld	hl,ldr
+	ld	de,himem
+	ld	bc,size
+	ldir			; copy loader to high memory
+	jp	loader
+
+ldr:
+
+	psect	boot
+
+loader:
+	ld	a,0C0h		; keep loader and BIOS data area mapped
+	out0	(CBAR),a
+	in0	a,(RAMLBR)	; we'll try to use all the available RAM,
+	out0	(BBR),a		; even the shadowed ROM area
+	in0	a,(SCR)
+	set	3,a		; enable the BIOS ROM in case it was shadowed
+	out0	(SCR),a
+	ld	hl,msg
+	rst	20h
+	ld	hl,kmap
+	ld	de,uzi
+loop:
+	ld	c,(hl)
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	ld	a,b
+	or	c
+	jr	z,gouzi
+	call	ldblk
+	jr	loop
+
+gouzi:	ld	a,0Dh
+	rst	18h
+	ld	a,0Ah
+	rst	18h
+	in0	a,(SCR)
+	set	3,a		; disable ROM
+	out0	(SCR),a
+;	in0	a,(BBR)
+;	out	(CBR),a		; setup CBR = BBR
+	ld	hl,cmdline+1
+	ld	a,(bdev)
+	ld	(hl),a
+	inc	hl
+	ld	(hl),0
+	jp	uzi
+
+msg:	defm	'Loading UZI... '
+	defb	0
+
+ldblk:	push	hl
+	push	de
+	ld	d,b
+	ld	e,c		; block number to DE
+	ld	hl,bfr
+	call	hdread		; read a block from hard disk
+	jr	c,error
+	ld	hl,bfr
+	pop	de		; restore load address
+	ld	bc,512
+	in0	a,(SCR)
+	set	3,a		; disable ROM
+	out0	(SCR),a
+	ldir
+	in0	a,(SCR)
+	res	3,a		; enable ROM
+	out0	(SCR),a
+	pop	hl
+	ret
+
+error:
+	ld	hl,errmsg
+	rst	20h
+;	rst	38h
+	ret
+
+errmsg:	defm	'Load error'
+	defb	0Dh, 0Ah, 0
+
+;================================================================
+; GIDE I/O routines
+
+; GIDE adresses
+
+GIDE	equ	50h		; base address of GIDE board
+
+IdeDOR	equ	GIDE+6		; Digital Output Register
+IdeDat	equ	GIDE+8		; Data Register
+IdeErr	equ	GIDE+9		; Error Register
+IdeSCnt	equ	GIDE+0Ah	; Sector Count
+IdeSNum	equ	GIDE+0Bh	; Sector Number
+IdeCLo	equ	GIDE+0Ch	; Cylinder Low
+IdeCHi	equ	GIDE+0Dh	; Cylinder High
+IdeSDH	equ	GIDE+0Eh	; Drive and Head
+IdeCmd	equ	GIDE+0Fh	; Command / Status
+
+; Commands for IDE hard disk drives:
+
+CmdRd	equ	20h		; Read Sector
+CmdWr	equ	30h		; Write Sector
+CmdInit	equ	91h		; Initialize Drive Params
+
+	cond	0
+
+; Initialise the IDE hard disk. This routine activates the native
+; or translation mode with the given (hopefully proper) parameters.
+; If the target system provides a means for a time-out, the first
+; wait for a ready state should be limited to about 10 seconds, with
+; an error abort on time-out.
+
+HDInit:	ld	a,6
+	out0	(IdeDOR),a	; set software reset
+	ld	b,0
+	djnz	$		; wait a short time (3 us minimum)
+	ld	a,2
+	out0	(IdeDOR),a	; deactivate software reset
+ini1:	in0	a,(IdeCmd)	; wait for drive ready (time-out?)
+	rla
+	jr	c,ini1
+	ld	a,Nsecs
+	out0	(IdeSCnt),a	; set sector count
+	ld	hl,Ncyls
+	out0	(IdeCLo),l
+	out0	(IdeCHi),h	; set cylinder count
+	ld	a,0A0h .or. (Nheads-1)
+	out0	(IdeSDH),a	; set number of heads (-1)
+	ld	a,CmdInit	; command: Initialise
+	out0	(IdeCmd),a	; output command: set params
+	ret
+
+; Prepare hard disk for data transfer. The physical sector address
+; is written to the appropriate IDE registers.
+
+; This routine would be a nice place to hold the sector address
+; calculation from the track/sector values given by most operating
+; systems. Then, the values could be calculated and used directly,
+; without being stored in RAM variables inbetween.
+; Comment: take care that IDE addressing starts with the zero value
+; for cylinder and head, but with 1 for the sector number!
+
+HdPrep:	in0	a,(IdeCmd)	; wait for drive ready
+	rla
+	jr	c,HdPrep
+	ld	a,1
+	out0	(IdeSCnt),a	; set sector count to 1
+	ld	a,(Sector)	; get sector number (0 up)
+	inc	a		; 
+	out0	(IdeSNum),a	; set sector number (1 up)
+	ld	a,(Head)	; get head number (0 up)
+	or	0A0h		; add constant bits
+	out0	(IdeSDH),a	; write SDH register
+	ld	hl,(Cylinder)
+	ld	a,l
+	out0	(IdeCLo),a
+	ld	a,h
+	out0	(IdeCHi),a	; set cylinder number (0 up)
+	ret
+
+; Read data from hard disk. The data is transferred to a
+; buffer which is normally a deblocking buffer of the
+; operating system. On errors, return with A=1 (otherwise 0).
+
+RdIDE:	call	HdPrep		; prepare task file registers
+	ld	a,CmdRd
+	out0	(IdeCmd),a	; command: read sector data
+rd1:	in0	a,(IdeCmd)	; wait for DRQ of drive
+	bit	3,a
+	jr	z,rd1
+	ld	hl,(BufAdr)	; get target address
+	ld	bc,IdeDat	; B = 0 (counter), C = I/O address
+	inir
+	inir			; read 512 data bytes (2x 256)
+rd2:	in0	a,(IdeCmd)	; wait for drive ready
+	rla
+	jr	c,rd2
+	in0	a,(IdeCmd)	; check final drive status
+	and	10001001B	; busy, DRQ, or error?
+	ret	z		; no: all is fine
+	ld	a,1
+	ret			; on errors, return with A=1
+
+	endc
+
+;---------------------------------------------------------------------
+; Compute the CHS Address and Read the specified Block.
+; Enter: DE = block number,
+;        HL = load address.
+; Exit : CY set on errors.
+
+hdread:	ld	bc,0		; Wait up to several seconds for drive ready
+WtLp:	in0	a,(IdeCmd)	; Get the Busy Bit
+	rla			; Is it BSY?
+	jr	nc,HdOp0	; ..jump if Not
+	push	bc		; Else Pause: Save overall Counter
+	ld	b,0		;  Set max loop delay
+hdel0:	djnz	hdel0		; ..pause..
+	pop	bc		;    restore regs
+	dec	bc
+	ld	a,b
+	or	c
+	jr	nz,WtLp		;..loop if more time remains
+	scf
+	ret			; Else Return Timeout Error
+HdOp0:	push	hl
+	ld	hl,(hdoffs)	; Fetch Track offset for this partition
+	xor	a
+	ld	b,4
+mul16:	add	hl,hl		; Multiply by 16
+	adc	a,a		;   with 20-bit result
+	djnz	mul16
+	add	hl,de		; Add desired relative block #
+	adc	a,0		;   to 20-bit resulting block Number
+	ld	c,a
+
+; This routine uses physical drive characteristics.
+;
+; The routine computes Head, Sector and Track from a sequential block number
+; defined by: Trk_Offset * 16 + Block #.  The Physical characteristics
+; needed are Number_of_Heads (nheads) and Sectors_per_Track (nspt).
+;
+; Computation of the CHS address is per:
+;
+;   Sector := (Block# MOD nspt)+1	(* Quotient1 := Block# DIV nspt *)
+;   Head   := Quotient1 MOD nheads	(* Quotient2 := Quotient1 DIV nheads *)
+;   Track  := Quotient2
+;
+; Prepare for Disk Read by Preloading all Registers
+
+	ld	a,(nspt)	; Load Number of Sectors-per-Track
+	ld	e,a
+	call	Divide		; Divide CHL by E
+	inc	a		;  Make Sector Number Base at 1
+	out0	(IdeSNum),a	;   Send to GIDE Register
+	ld	a,(nheads)	; Get Number of Heads
+	ld	e,a
+	call	Divide		; Divide CHL (Quotient from above) by E
+	or	0A0h		;  add Fixed Pattern (Assuming Unit 0, Master)
+	out0	(IdeSDH),a	;   Send to GIDE Register
+	out0	(IdeCHi),h	; Send Hi-Byte of Cylinder Number to GIDE
+	out0	(IdeCLo),l	;  and send Lo-Byte of Cylinder Number
+	pop	hl		; Restore Load Address
+	ld	A,0AAh
+	out0	(IdeErr),a	; Activate Retries w/pattern in GIDE Err Reg
+	ld	a,1		; One Block to Read
+	out0	(IdeSCnt),a	;   pass to GIDE
+	ld	b,5		; Give it a few tries
+HDOps0:	push	bc		; Save Count
+	call	GoGIDE		; Try Read/Write Operation
+	pop	bc
+	ret	z		; ..quit if Ok
+	djnz	HDOps0		; Loop while tries remain
+	scf			; Else return Error
+	ret
+
+;:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+; The IDE/ATA Command Block layout is:
+;
+; Byte		 Format    R/W/V    Init    RdID    Power   Diag   PwrSet  Home
+; 0 [ Command ]    50    20/30/40    91	     EC   E0/E1/E5   90    E2/E3    10
+; 1 [ BitMap  ]    70     7C/(7E)    74      40	     00	     00	    04      40
+; 2 [ Drv/Hd  ]   0AnH     0AnH    0AnH-1   0AnH     -	     -	    -      0An0
+; 3 [ Cyl#(Hi)]   CylHi    CylHi    CylHi    -	     -	     -	    -       -
+; 4 [ Cyl#(Lo)]   CylLo    CylLo    CylLo    -	     -	     -	    -       -
+; 5 [ Sector# ]	   -	   Sctr	     -	     -	     -	     -	    -       -
+; 6 [ Sctr Cnt]	   -	   SCnt     NSecs    -	     -	     -	  n*5Secs   -
+; 7 [ Err Reg ]	   -	   (0AA)     -	     -	     -	     -	    -       -
+; 8 [ Dgtl Out]	   -	    -	     -	     -	     -	     -	    -       -
+;   Rslts/Stat:   Stat     Stat     Stat    Stat    SCnt    Err	    -      Stat
+;		  Reg      Reg      Reg     Reg     Reg     Reg	           Reg
+;
+; Enter: GIDE Registers primed for Read/Write.
+;	 (_cmdblk+0) has respective Read/Write Command
+; Exit :  A = 0, Zero Flag Set (Z) if Ok, Zero Flag Clear (NZ) if Errors
+;	  H = Error Byte value (If any)
+;	  L = Status Byte value (If any)
+;::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+; Raw GIDE Driver.
+;   The Target is (hopefully) still ready from initial test
+;   HL = load buffer
+
+GoGIDE:	ld	bc,IdeDat	;   Pre-load Data Reg Adr in C, 0 in B
+
+; Read a Sector from the Disk, or Disk Parameters to the Buffer
+
+HRead:	ld	a,CmdRd
+	call	Cmd_Wt		; Send Command in A, Return when Ready
+HRead0:	in0	a,(IdeCmd)	; Get Status
+	bit	3,a		; Ready?
+	jr	z,HRead0	; ..loop if Not
+	inir			; Read 512 bytes
+	inir			;   in two-256 byte sequences
+HdFini:	call	Wt_Rdy		; Wait for drive to become Ready
+;; -- May need this with some Older Drives that send ECC bytes with no warning!
+;;	bit	4,a		; DRQ Shifted?
+;;	jr	z,HdFnQ		; ..jump if Not
+;;	in0	a,(IdeDat)	; Else Read data reg (ECC Bytes?
+;;	jr	HdFini		; ..loop til no more data
+
+HdFnQ:	in0	a,(IdeCmd)	; Restore byte
+	and	10001001B	; Busy, DRQ, or Error?
+	ret	z		; ..exit if Ok
+	scf			; Else Set Error Status
+	ret
+
+;================== SUPPORT ROUTINES ==================
+; Divide 24-bit Number by 8-bit Number returning Quotient and Remainder
+; Enter: CHL = 24-bit Unsigned Dividend
+;	 E = 8-bit Unsigned Divisor
+; Exit : CHL = 24-bit Quotient
+;	 A = 8-bit Remainder
+; Uses : AF,BC,HL
+
+Divide:	ld	b,24+1		; 25 times thru Loop
+	xor	a		; Clear Remainder and Carry
+Div:	adc	a,a		; Shift Accum Left + Carry
+	sbc	a,e		;  Subtract Divisor
+	jr	nc,Div0		; ..jump if it Worked
+	add	a,e		; Else restore Accum & Carry
+Div0:	ccf			; Flip Carry Bit
+	adc	hl,hl		;  Shift any Carry into
+	rl	c		;   Dividend/Quotient
+	djnz	Div		;  ..loop til Done
+	ret
+
+;.....
+; Send command to the IDE Command Register, fall thru to wait for Ready Status
+
+Cmd_Wt:	out0	(IdeCmd),a	;   Start Operation
+			;..fall thru to wait for Ready
+; Wait for Drive to become Ready (No Timeout)
+
+Wt_Rdy:	in0	a,(IdeCmd)	; Get Drive Status
+	rla			; Ready?
+	jr	c,Wt_Rdy	; ..loop if Not
+	ret
+
+; RAM variables:
+
+hddat	equ	$ - loader
+
+; Hard disk geometry definition.
+; The following default values are for a WD Tidbit-60
+; These can be overwritten by the boot installer.
+
+ncyl:	defw	1024		; number of cylinders
+nheads:	defb	7		; number of heads
+nspt:	defb	17		; number of sectors per track
+hdoffs:	defw	2000		; partition offset in UZI tracks
+
+datofs	equ	$ - loader
+
+bdev:	defb	0
+kmap:	defs	96*2		; space for the kernel block map
+
+	defb	0
+
+size	equ	$ - loader
+
+bfr	equ	$
+
+	end

@@ -5,10 +5,18 @@
  *******************************************************/
 
 #include <stdio.h>
+#include <string.h>
 #include <unix.h>
 
 
 long lseek(uchar, long, uchar);
+
+void usage(char *progname)
+{
+    fprintf(stderr, "usage: %s devname [-l loader] kernel [cmdline]\n", progname);
+    exit(1);
+}
+
 
 main(argc, argv)
 int argc;
@@ -20,26 +28,37 @@ char *argv[];
     dinode *ino;
     int _stat();
     int i, j, datofs, inode, block, offset;
-    char bdev, chksum;
+    char *devname, *kernel, *loader, bdev, chksum;
     blkno_t *bp, map[96];  /* 48K max for kernel */
     static unsigned char buf[512];
 
 
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s devname filename [cmdline]\n", argv[0]);
-        exit(1);
+    if (argc < 3) usage(argv[0]);
+
+    devname = argv[1];
+    loader = "loader";
+
+    for (i = 2; i < argc; ++i) {
+	if (strcmp(argv[i], "-l") == 0) {
+	    if (++i == argc) usage(argv[0]);
+	    loader = argv[i];
+	    break;
+	}
     }
     
-    bdev = (argc == 4) ? argv[3][0] : '\0';
+    if (++i == argc) usage(argv[0]);
+    kernel = argv[i];
 
-    dev = _open(argv[1], O_RDWR);
+    bdev = (++i < argc) ? argv[i][0] : '\0';
+
+    dev = _open(devname, O_RDWR);
     if (dev < 0) {
-        fprintf(stderr, "%s: can't open %s\n", argv[0], argv[1]);
+        fprintf(stderr, "%s: can't open %s\n", argv[0], devname);
         exit(1);
     }
 
-    if (_stat(argv[2], &statbuf) != 0) {
-      printf("%s: can't stat %s\n", argv[0], argv[2]);
+    if (_stat(kernel, &statbuf) != 0) {
+      printf("%s: can't stat %s\n", argv[0], kernel);
       exit(1);
     }
     
@@ -70,9 +89,9 @@ char *argv[];
       map[j++] = 0;
     }
 
-    fd = _open("loader", O_RDONLY);
+    fd = _open(loader, O_RDONLY);
     if (fd < 0) {
-        printf("%s: loader not found\n", argv[0]);
+        printf("%s: can't open %s\n", argv[0], loader);
         exit(1);
     }
     _read(fd, buf, 512);

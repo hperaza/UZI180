@@ -1,2 +1,0 @@
--Ptext=8000h/0,boot=0C000h/ -c -oloader loader.obj
-

@@ -1,2 +1,0 @@
--Ptext=0,data,bss -C100H -oinsboot crt.obj insboot.obj uzilibc.lib
-
