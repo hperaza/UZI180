@@ -1,0 +1,3 @@
+r uuni.lib \
+convdate.obj getcwd.obj getpw.obj putpw.obj getgr.obj putgr.obj \
+dirent.obj crypt.obj getpass.obj isatty.obj
