@@ -1,5 +1,5 @@
 /* init.c - simplified init program for UZI180 (mix of init/getty/login)
- *          only handles logins in /dev/tty1
+ *          only handles logins in /dev/tty1 and /dev/tty2
  *          handles user names from /etc/passwd
  */
 
@@ -24,7 +24,7 @@ extern char *getpass(char *);
 
 main()
 {
-    int fdtty1, sh_pid, pid;
+    int fdtty1, sh1_pid, sh2_pid, pid;
     int open(), login(), wait(), unlink();
 
     signal(SIGINT, SIG_IGN);
@@ -48,23 +48,34 @@ main()
     close(2);
     dup(fdtty1);
 
-    putstr("init version 0.8\n");
+    putstr("init version 0.9\n");
     
     /* then call the login procedure on it */
 
+    sh1_pid = -1;
+    sh2_pid = -1;
+
     for (;;) {
 
-        sh_pid = login("/dev/tty1");
+        if (sh1_pid < 0) sh1_pid = login("/dev/tty1");
+        if (sh2_pid < 0) sh2_pid = login("/dev/tty2");
 
         /* wait until the user exits the shell */
 
-        do {
+        for (;;) {
             pid = wait(NULL);
-        } while (sh_pid != pid);
+            if (pid == sh1_pid) {
+              sh1_pid = -1;
+              break;
+            } else if (pid == sh2_pid) {
+              sh2_pid = -1;
+              break;
+            }
+        }
 
         /* then loop to call login again */
         
-        crlf;
+        /*crlf;*/
     }
 }
 
