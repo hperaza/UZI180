@@ -1,0 +1,9 @@
+r ustdio.lib \
+vprintf.obj vfprintf.obj vsprintf.obj vscanf.obj vsscanf.obj va_arg.obj \
+tmpnam.obj assert.obj printf.obj fprintf.obj sprintf.obj doprnt.obj \
+putenv.obj gets.obj puts.obj fwrite.obj getw.obj putw.obj getenv.obj \
+putchar.obj perror.obj fputc.obj flsbuf.obj fopen.obj fdopen.obj \
+freopen.obj fread.obj rewind.obj fseek.obj remove.obj setbuf.obj \
+fscanf.obj ctime.obj cgets.obj cputs.obj sscanf.obj scanf.obj doscan.obj \
+ungetc.obj fgetc.obj filbuf.obj exit.obj stdclean.obj fclose.obj \
+fflush.obj buf.obj sys_err.obj
