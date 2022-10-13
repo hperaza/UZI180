@@ -82,18 +82,21 @@ uint16 fsize, isize;
     uint16 j;
     char *zeros;
     char *zerobuf();
+    int  yes();
 
     /* Zero out the blocks */
     printf("Zeroizing i-blocks...\n");
     zeros = zerobuf();		/* Get a zero filled buffer */
 
-#if 1
-    for (j = 0; j < fsize; ++j)
-	dwrite(j, zeros);
-#else
     for (j = 0; j < isize; ++j)
 	dwrite(j, zeros);
-#endif
+
+    printf("Zero all data blocks? ");
+    if (yes()) {
+	printf("Zeroizing d-blocks...\n");
+	for ( ; j < fsize; ++j)
+	    dwrite(j, zeros);
+    }
 
     /* Initialize the super-block */
     fs_tab.s_mounted = SMOUNTED;	/* Magic number */
@@ -130,17 +133,18 @@ uint16 fsize, isize;
     inode[0].i_nlink = 1;
     inode[0].i_mode = ~0;
 
+    sync();
+
     printf("Writing initial inode and superblock...\n");
 
-    sync();
     dwrite(2, (char *) inode);
     dwrite(isize, (char *) dirbuf);
-
     sync();
+
     /* Write out super block */
     dwrite(1, (char *) &fs_tab);
-
     sync();
+
     printf("Done.\n");
 }
 

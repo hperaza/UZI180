@@ -14,8 +14,13 @@
 
 typedef unsigned char BOOL;
 
+#ifndef FALSE
 #define FALSE   ((BOOL) 0)
+#endif
+#ifndef TRUE
 #define TRUE    ((BOOL) 1)
+#endif
+
 #define USERSIZE	1024	/* max line length typed in by user */
 #define INITBUFSIZE	1024	/* initial buffer size */
 #define STDIN           0
@@ -128,7 +133,7 @@ static void docommands()
     BOOL have2;
     char buf[USERSIZE];
 
-    while (TRUE) {
+    for (;;) {
 	intflag = FALSE;
 	printf(": ");
 	fflush(stdout);
@@ -643,7 +648,7 @@ NUM *retnum;
     value = 0;
     sign = 1;
 
-    while (TRUE) {
+    for (;;) {
 	while (isblank(*cp))
 	    cp++;
 
@@ -973,7 +978,7 @@ BOOL expandflag;
 	 * Show control characters and characters with the
 	 * high bit set specially.
 	 */
-	cp = lp->data;
+	cp = (unsigned char *) lp->data;
 	count = lp->len;
 	if ((count > 0) && (cp[count - 1] == '\n'))
 	    count--;

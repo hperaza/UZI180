@@ -4,7 +4,6 @@
 
 unsigned short newmode;
 
-char *rindex(char *, char);
 int  rmdir(char *);
 
 int remove_dir(name, f)

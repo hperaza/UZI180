@@ -4,7 +4,6 @@
 
 unsigned short newmode;
 
-char *rindex(char *, char);
 int  mkdir(char *path, int mode);
 
 int make_dir(name, f)
@@ -22,9 +21,9 @@ int f;
 	make_dir(iname, 1);
     }
     if (mkdir(name, newmode) && !f)
-	return (1);
+	return 1;
     else
-	return (0);
+	return 0;
 }
 
 
@@ -45,7 +44,8 @@ char **argv;
 		argv[i][strlen(argv[i]) - 1] = '\0';
 
 	    if (make_dir(argv[i], parent)) {
-		fprintf(stderr, "mkdir: cannot create directory %s\n", argv[i]);
+		fprintf(stderr, "mkdir: cannot create directory %s", argv[i]);
+		perror("");
 		er = 1;
 	    }
 	} else {
@@ -58,18 +58,29 @@ char **argv;
 
 int mkdir(char *path, int mode)
 {
-    char dot[100];
+    char *p, dot[256], parent[256];
     int  _mknod(), _link();
 
     if (_mknod(path, 040000 | mode, 0) != 0) return errno;
 
     strcpy(dot, path);
     strcat(dot, "/.");
+
     if (_link(path, dot) != 0) return errno;
 
     strcpy(dot, path);
     strcat(dot, "/..");
-    if (_link(".", dot) != 0) return errno;
+
+    p = rindex(path, '/');
+    if (p == NULL) {
+        strcpy(parent, ".");
+    } else {
+        while (p > path && *p == '/') --p;
+        strncpy(parent, path, p - path + 1);
+        parent[p - path + 1] = 0;
+    }
+
+    if (_link(parent, dot) != 0) return errno;
 
     return 0;
 }

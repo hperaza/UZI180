@@ -29,8 +29,6 @@ int stat(), open(), creat(), close(), read(), write();
 int utime(), chmod(), chown();
         
 
-BOOL intflag;
-
 BOOL isadir();
 BOOL copyfile();
 char *buildname();
@@ -124,11 +122,6 @@ BOOL setmodes;
     }
     buf = malloc(BUF_SIZE);
     while ((rcc = read(rfd, buf, BUF_SIZE)) > 0) {
-	if (intflag) {
-	    close(rfd);
-	    close(wfd);
-	    return FALSE;
-	}
 	bp = buf;
 	while (rcc > 0) {
 	    wcc = write(wfd, bp, rcc);
@@ -145,11 +138,15 @@ BOOL setmodes;
 	perror(srcname);
 	goto error_exit;
     }
+
+    free(buf);
     close(rfd);
+
     if (close(wfd) < 0) {
 	perror(destname);
 	return FALSE;
     }
+
     if (setmodes) {
 	chmod(destname, statbuf1.st_mode);
 
@@ -166,6 +163,7 @@ BOOL setmodes;
   error_exit:
     close(rfd);
     close(wfd);
+    free(buf);
 
     return FALSE;
 }

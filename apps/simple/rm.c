@@ -2,8 +2,6 @@
 #include <stdio.h>
 #include <unix.h>
 
-char *rindex(char *, char);
-
 #define lstat stat
 
 int stat(), unlink();

@@ -1,0 +1,121 @@
+cd /
+bget init
+chmod init 0755
+ls
+cd /bin
+bget ssh
+chmod ssh 0755
+bget cat
+chmod cat 0755
+bget chgrp
+chmod chgrp 0755
+bget chmod
+chmod chmod 0755
+bget chown
+chmod chown 0755
+bget cp
+chmod cp 0755
+bget cut
+chmod cut 0755
+bget date
+chmod date 0755
+bget dd
+chmod dd 0755
+bget df
+chmod df 0755
+bget echo
+chmod echo 0755
+bget ed
+chmod ed 0755
+bget false
+chmod false 0755
+bget fsck
+chmod fsck 0755
+bget kill
+chmod kill 0755
+bget ll
+chmod ll 0755
+bget ln
+chmod ln 0755
+bget ls
+chmod ls 0755
+bget mkdir
+chmod mkdir 0755
+bget mkfs
+chmod mkfs 0755
+bget mknod
+chmod mknod 0755
+bget more
+chmod more 0755
+bget mount
+chmod mount 0755
+bget mv
+chmod mv 0755
+bget passwd
+chmod passwd 0755
+bget pwd
+chmod pwd 0755
+bget rm
+chmod rm 0755
+bget rmdir
+chmod rmdir 0755
+bget sync
+chmod sync 0755
+bget su
+chmod su 04755
+bget touch
+chmod touch 0755
+bget true
+chmod true 0755
+bget umount
+chmod umount 0755
+ls
+cd /usr/bin
+bget basename
+chmod basename 0755
+bget bd
+chmod bd 0755
+bget cal
+chmod cal 0755
+bget dirname
+chmod dirname 0755
+bget du
+chmod du 0755
+bget grep
+chmod grep 0755
+bget id
+chmod id 0755
+bget od
+chmod od 0755
+bget patchcpm
+chmod patchcpm 0755
+bget patchold
+chmod patchold 0755
+bget printenv
+chmod printenv 0755
+bget prtroot
+chmod prtroot 0755
+bget ps
+chmod ps 0755
+bget sleep
+chmod sleep 0755
+bget termcap
+chmod termcap 0755
+bget tr
+chmod tr 0755
+bget uniq
+chmod uniq 0755
+bget uud
+chmod uud 0755
+bget uue
+chmod uue 0755
+bget uzidate
+chmod uzidate 0755
+bget wc
+chmod wc 0755
+bget which
+chmod which 0755
+bget whoami
+chmod whoami 0755
+ls
+quit

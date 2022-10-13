@@ -2,8 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern char *index(char *, char);
-extern int  access();
+extern int access();
 
 int main(argc, argv)
 int argc;

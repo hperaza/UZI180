@@ -1,7 +1,7 @@
 #ifndef	__DIRENT_H
 #define	__DIRENT_H
 
-#include "unix.h"
+#include <unix.h>
 
 #ifndef	MAXNAMLEN
 #define	MAXNAMLEN	13

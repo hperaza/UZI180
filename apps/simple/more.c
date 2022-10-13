@@ -7,7 +7,8 @@
 #include <stdio.h>
 #include <unix.h>
 
-int more(FILE *fp);
+int more(FILE *fp, int morefiles);
+int nextpage();
 
 int main(argc, argv)
 int argc; char **argv;
@@ -15,7 +16,7 @@ int argc; char **argv;
     FILE *fp;
     char *name, *getenv();
     int  next, dup(), open();
-
+    
     if (argc == 1) {
 
         next = dup(0);
@@ -27,7 +28,7 @@ int argc; char **argv;
         }
         if (open(name, O_RDWR) == 0) {
 	    fp = fdopen(next, "r");
-            if (fp) more(fp);
+            if (fp) more(fp, 0);
         } else {
 	    perror("more (CTTY)");
 	}
@@ -43,7 +44,7 @@ int argc; char **argv;
 	}
 	
 	printf("<< %s >>\n", name);
-	next = more(fp);
+	next = more(fp, (argc > 0));
 	fclose(fp);
 	if (!next) break;
     }
@@ -51,11 +52,9 @@ int argc; char **argv;
     return 0;
 }
 
-int more(FILE *fp)
+int more(FILE *fp, int morefiles)
 {
-    int  ch, line, col;
-    char buf[80];
-    int  read();
+    int ch, line, col;
 
     line = 1;
     col = 0;
@@ -94,15 +93,7 @@ int more(FILE *fp)
 	if (col > 0)
 	    putchar('\n');
 
-	printf("--More--");
-	    fflush(stdout);
-
-	if (read(0, buf, sizeof(buf)) < 0) {
-	    return 0;
-	}
-	ch = buf[0];
-	if (ch == ':')
-	    ch = buf[1];
+	ch = nextpage();
 
 	switch (ch) {
 	case 'N':	/* next file */
@@ -118,5 +109,22 @@ int more(FILE *fp)
 	line = 1;
     }
 
+    if (morefiles) {
+	ch = nextpage();
+	if (ch == 'q' || ch == 'Q') return 0;
+    }
+
     return 1;
+}
+
+int nextpage()
+{
+    char buf[80];
+    int  read();
+
+    printf("--More--");
+    fflush(stdout);
+
+    if (read(0, buf, sizeof(buf)) < 0) return 0;
+    return (buf[0] == ':' ? buf[1] : buf[0]);
 }

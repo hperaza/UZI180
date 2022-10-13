@@ -7,6 +7,9 @@ From UZI by Doug Braun and UZI280 by Stefan Nitschke.
  *   11.07.98 - Shortened Time Slices to 50 Ticks/Sec (20 mS).	HFB
  */
 
+#ifndef _UNIX_H
+#define _UNIX_H
+
 #ifndef vax
 #ifndef CPM
 #define CPM
@@ -419,3 +422,5 @@ typedef struct devsw {
 #define ERANGE          34              /* Result too large */
 
 #define ENAMETOOLONG    63              /* File name too long */
+
+#endif  _UNIX_H

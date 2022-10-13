@@ -236,6 +236,8 @@ int rename(char *srcname, char *dstname)
 int rename(char *srcname, char *dstname)
 {
     extern int _link(), _unlink();
+
+    /* TODO: handle moving of directories correctly ('..' must be updated!) */
         
     if (_link(srcname, dstname) < 0) {
         return -1;    

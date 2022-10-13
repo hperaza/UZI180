@@ -117,7 +117,7 @@ BOOL ignorecase;
     len = strlen(word);
 
     if (!ignorecase) {
-	while (TRUE) {
+	for (;;) {
 	    string = strchr(string, word[0]);
 	    if (string == NULL)
 		return FALSE;
@@ -136,7 +136,7 @@ BOOL ignorecase;
     if (isupper(lowfirst))
 	lowfirst = tolower(lowfirst);
 
-    while (TRUE) {
+    for (;;) {
 	while (*string && (*string != lowfirst) &&
 	       (!isupper(*string) || (tolower(*string) != lowfirst)))
 	    string++;

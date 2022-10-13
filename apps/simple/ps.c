@@ -22,7 +22,7 @@ char s;
 	case P_RUNNING: return "Running";
 	case P_READY:   return "Ready";
 	case P_SLEEP:   
-	case P_XSLEEP:  return "Sleeping";
+	case P_XSLEEP:  return "Sleep";
 	case P_PAUSE:   return "Paused";
 	case P_WAIT:    return "Waiting";
     }

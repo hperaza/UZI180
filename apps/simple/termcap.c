@@ -150,6 +150,8 @@ char *arg;
 
 /****************************/
 
+#if 0
+
 /*#include <termcap_lib.c>*/
 /*
  *	termcap.c	V1.1	20/7/87		agc	Joypace Ltd
@@ -502,3 +504,5 @@ void (*outc)(int ch);
 	(*outc) (*cp++);
     return (1);
 }
+
+#endif
