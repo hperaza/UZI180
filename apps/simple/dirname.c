@@ -4,8 +4,6 @@
 #define STDOUT_FILENO  1
 #define STDERR_FILENO  2
 
-char *rindex(char *, char);
-
 void strip_trailing_slashes(path)
 char *path;
 {
