@@ -5,8 +5,6 @@
 #define STDOUT_FILENO  1
 #define STDERR_FILENO  2
 
-char *rindex(char *, char);
-
 static void remove_suffix(name, suffix)
 register char *name, *suffix;
 {
