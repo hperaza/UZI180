@@ -1,0 +1,23 @@
+cd /dev
+rm *
+ls -al
+mknod fd0 60644 0
+mknod fd1 60644 1
+mknod hda1 60644 2
+mknod hda2 60644 3
+mknod hda3 60644 4
+mknod hda4 60644 5
+mknod hda5 60644 6
+mknod hda6 60644 7
+mknod hda7 60644 8
+mknod hda8 60644 9
+mknod swap 60222 10
+mknod lp 20644 11
+mknod tty1 20666 12
+mknod tty2 20644 13
+mknod null 20622 14
+mknod zero 20644 15
+mknod kmem 20622 16
+mknod proc 20666 17
+mknod mt 20644 18
+ls -al

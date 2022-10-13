@@ -9,8 +9,8 @@
 
 /* ! ! ! ! !  Define ONLY ONE of the following types:  ! ! ! ! ! */
 /* ! ! ! ! !            UnDefine all others            ! ! ! ! ! */
-#define  SCSI
-#undef   GIDE
+#undef  SCSI
+#define GIDE
 
 #define LUN   0    /* Only needed for SCSI, but no adverse effect on GIDE */
 
@@ -31,12 +31,18 @@
  * physical CHS address for Read/Write operations.
  */
 #ifdef GIDE
-#define  HD_Cyls   998     /* for Toshiba MK4118 2.5" 82 MB */
-#define  HD_Heads   10
+#define  HD_Cyls    1024     /* for WD Tidbit-60 */
+#define  HD_Heads   7
 #define  HD_Sector  17
 #endif
 
+/* Define the following to enable recognition of the partition table */
+
+#define USE_PTABLE
+
 /* Initial Track Offsets, and Number of Tracks in each partition. */
+/* Used only if the USE_PTABLE is not defined */
+
 /***************************************************************************
  * NOTE: For Hard drives, each "track" equates to 16 512-byte blocks (8 KB).
  *       The Low-level assembly driver should multiply the offset by 16

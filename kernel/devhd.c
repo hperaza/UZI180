@@ -20,6 +20,10 @@ UZI (Unix Z80 Implementation) Kernel:  devhd.c
 extern unsigned char hdspt, hdhds;
 #endif
 
+#ifdef USE_PTABLE
+unsigned hd_start[8], hd_size[8];
+#endif
+
     /* All Hard Disk Drivers pass Commands and Data via the cmdblk array.
      * The definition of each byte in the array varies as:
      *
@@ -116,6 +120,13 @@ int rawflag;
         block = udata.u_buf->bf_blk;
     }
 
+#ifdef USE_PTABLE
+    if (minor < 8) {
+        hd_offset = hd_start[minor];
+        if (block < (hd_size[minor] << 4))
+            goto setCDB;
+    } 
+#else
     switch (minor)			/* Also need to ensure that ending
 					   block # is valid on drive. HFB
 					*/
@@ -134,6 +145,7 @@ int rawflag;
                 else break;
         default: ;
     }
+#endif
     udata.u_error = ENXIO;
     return (1);
 
@@ -163,5 +175,100 @@ int rdflag;
 wd_open (minor)
 int minor;
 {
-    return (0);
+    if (hd_size[minor] == 0) return 1;  /* shouldn't we update udata.u_error? */
+    return 0;
+}
+
+wd_init()
+{
+#ifdef USE_PTABLE
+    unsigned char *buf, *tmpbuf();
+    unsigned char cks, *b;
+    register blkno_t block;
+    register int i, valid, *p;
+
+    buf = tmpbuf();
+
+#ifdef GIDE
+    hdspt = HD_Sector;           /* Set physical drive params if IDE */
+    hdhds = HD_Heads;
+#endif
+    cptr = cmdblk;
+    busid = 1;
+    dlen = 512;
+    dptr = (char *) buf;
+
+    hd_offset = 0;
+    block = 0;
+
+    cmdblk[0] = RDCMD;
+    cmdblk[1] = LUN << 5;
+    cmdblk[2] = block >> 8;
+    cmdblk[3] = block;
+    cmdblk[4] = 1;
+    cmdblk[5] = 0;       /* Clear Flags */
+
+    if (scsiop()) return 1;
+
+    kprintf("hda: ");
+
+    /* figure out drive geometry */
+
+    for (i = 0; i < 8; ++i) {
+      hd_start[i] = 0;
+      hd_size[i] = 0;
+    }
+
+    /* do some validation checks first */
+
+    if (buf[0] == 0x76) {
+        valid = 0;
+        if (buf[1] == 0x21) {
+            /* apparently a B/P BIOS boot record */
+            return 1;
+        }
+    } else if (buf[0] == 0xC3) {
+        p = (int *) &buf[3];
+        if ((*p < 7) || (*p > 512)) valid = 0;
+        p = (int *) &buf[5];
+        if ((*p < 7) || (*p > 512)) valid = 0;
+        /* should we check for a 'P112GIDE' signature/volume_id as well? */
+    } else {
+        valid = 0;
+    }
+
+    for (i = 0, cks = 0; i < 512; ++i) cks += buf[i];
+    if (cks != 0) valid = 0;
+
+    if (!valid) return 1;
+
+    p = (int *) &buf[5];
+    p = (int *) &buf[*p];
+    b = (unsigned char *) p;
+    
+    /*hdcyl = *p; */
+    hdhds = *(b+2);
+    hdspt = *(b+3);
+
+    /* we should still check for a valid disk geometry definition */
+
+    p = (int *) &buf[3];
+    p = (int *) &buf[*p];
+
+    /* update hd_start[] and hd_size[] */
+
+    for (i = 0; i < 8; ++i) {
+        hd_start[i] = *p++;
+        hd_size[i] = *p++;
+        b = (unsigned char *) p++;
+        if (*b++ != 0xD1) {   /* UZI partition */
+            hd_size[i] = 0;
+        }
+        if (hd_size[i]) kprintf("hda%d ", i+1);
+    }
+    kprintf("\n");
+
+    brelse(buf);
+#endif
+    return 0;
 }

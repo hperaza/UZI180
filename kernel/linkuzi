@@ -1,5 +1,5 @@
 -Duzi.sym -muzi.map -n -c -ouzi.com \
--Ptext=0100h/0,data,common=0F000H/,cpm22=0E700H/,bss=9000h/0 \
+-Ptext=0100h/0,data,common=0F000H/,cpm22=0E600H/,bss=9000h/0 \
 start.obj data.obj z180asm.obj machasm.obj machdep.obj filesys.obj \
 process.obj procasm.obj scall1a.obj scall1b.obj scall1c.obj \
 scall2.obj devtty.obj devio.obj devhd.obj hdasm.obj devmisc.obj \

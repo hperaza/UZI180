@@ -10,7 +10,7 @@
 	global	_ub					; in data.c
 	global	_ei					; in machasm.asz
 
-SPEED	EQU	18		; Set to CPU Speec in MHz (for delay timer)
+SPEED	EQU	18		; Set to CPU Speed in MHz (for delay timer)
 
 OSYS	EQU	2		; Index into ub to insys flag
 	 psect text
@@ -173,6 +173,7 @@ NoDrv:	LD	HL,-1		; Set Error Status
 ;
 ; Enter: Drive Minor # is on Stack.  Entry Point sets Read/Write Flag
 ; Exit :  A = 0, Zero Set if Ok, A <> 0, Zero Reset if Errors
+;        (also returns H = 0 and L set to A for compatibilty with C code)
 ; Uses : AF,HL
 
 _fdread0:
@@ -247,6 +248,8 @@ FhdrX:	PUSH	AF		; Save Status
 	LD	(_ub+OSYS),A	;  Reset Insys flag to entry
 	CALL	_ei		;   reset Ints to desired state
 	POP	AF		; Get return status back
+	LD	L,A
+	LD	H,0
 	RET			;   and Exit
 
 ;-------------------------------------------------------------
@@ -427,7 +430,18 @@ SEEK1:	LD	(retrys),A	;  save remaining Retry Count
 	LD	BC,3*256+0FH	;   (3-byte Seek Command = 0FH)
 	CALL	FdCmd		; Execute the Seek
 	CALL	FdcDn		; Clear Pending Int, wait for Seek Complete
+
+	AND	11100000B	;;
+	CP	00100000B	;;
+	JR	NZ,SEEK2	;;
+	
 	AND	01000000B	; Set NZ if Abnormal Termination
+
+	LD	B,A		;; Save Seek Status
+	LD	A,(trk)		;; Check track #
+	CP	C		;;  Same track?
+	JR	NZ,SEEK2	;;   Jump to Retry if NOT
+	LD	A,B		;; Restore Seek Status
 
 	INC	D		; Are we Verifying (FF -> 0)?
 	CALL	Z,ReadID	;   Read next ID Mark if So
@@ -436,7 +450,7 @@ SEEK1:	LD	(retrys),A	;  save remaining Retry Count
 	OR	A		; Set Status (Seek Status if No ReadID)
 	JR	Z,SEEKX		; ..exit if Ok
 
-	LD	A,(retrys)	; Else get trys remaining
+SEEK2:	LD	A,(retrys)	; Else get trys remaining
 	DEC	A		; Any left (80-track could need two)?
 	JR	NZ,SEEK1	; ..loop to try again if More
 	DEC	A		; Else set Error Flag (0->FF)
@@ -494,8 +508,8 @@ FdcXit:	POP	BC		; Restore Regs
 ; Check for Proper Termination of Seek/Recalibrate Actions by
 ;  executing a Check Interrupt Command returning ST0 in A.
 ; Enter: None.  Used after Seek/Recalibrate Commands
-; Exit : AF = ST0 Result Byte
-; Uses : AF.  All other registers preserved/unused
+; Exit : A = ST0 Result Byte, C = PCN result byte
+; Uses : AF and C.  All other registers preserved/unused
 
 FdcDn:	PUSH	HL		; Don't alter regs
 FdcDn0:	CALL	WRdy1
@@ -508,6 +522,7 @@ FdcDn0:	CALL	WRdy1
 	JR	Z,FdcDn0	; ..jump to exit if So
 	CALL	WRdy1
 	IN	A,(DR)		; Read Second Result Byte (Trk #)
+	LD	C,A		; ..into C
 	LD	A,L
 	BIT	5,A		; Command Complete?
 	JR	Z,FdcDn0	; ..loop if Not
@@ -661,7 +676,8 @@ DSDD5	EQU	00101010B	; MFM, DD, DS, 5.25",  512-byte Sctrs (800 KB)
 	
 	 psect data
 _dTbl:				; Drive Param Table.  1 Entry Per Drive.
-	DEFB	00H, 0CFH, 02H, 27, 18,  1, IBMPC3, 16, 0
+	DEFB	00H, 0CFH, 02H, 27, 18,  1, IBMPC3, 16, 0, 160
+	;	 |     |    |    |   |   |    |      |  |   +- Number of Cylinders
 	;	 |     |    |    |   |   |    |      |  +- Current Track Number
 	;	 |     |    |    |   |   |    |      +- Spinup (1/20-secs)
 	;	 |     |    |    |   |   |    +-- Format Byte (See above)
@@ -673,9 +689,9 @@ _dTbl:				; Drive Param Table.  1 Entry Per Drive.
 	;					    HUT (B3-0) = 240 mS
 	;	 +--------------------------- Drive Logged (FF), Unlogged (0)
 TBLSIZ	 EQU  $-_dTbl
-	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0
-	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0
-	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0
+	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0, 160
+	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0, 160
+	DEFB	00H, 0CFH, 01H, 27, 18, 1, IBMPC3, 10, 0, 160
 
 ; -->>> NOTE: Do NOT move these next two variables out of sequence !!! <<<--
 motim:	DEFB	0		; Motor On Time Counter

@@ -89,7 +89,9 @@ inoptr *parent;
         }
 
         /* See if we are going up through a mount point */
-        if ( wd->c_num == ROOTINODE && wd->c_dev != ROOTDEV && name[1] == '.')
+        if (wd->c_num == ROOTINODE && wd->c_dev != ROOTDEV &&
+            name[0] == '.' && name[1] == '.' &&
+            (name[2] == '/' || name[2] == '\0'))
         {
            temp = fs_tab[wd->c_dev].s_mntpt;
            ++temp->c_refs;

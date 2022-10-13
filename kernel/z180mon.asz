@@ -358,7 +358,7 @@ outport:ld	c,l
 	ret
 
 ; G addr
-; Go (execute) program at addr. Progam may use return 
+; Go (execute) program at addr. Program may use return 
 ; instruction to return to monitor
 
 run:	call	r1

@@ -11,6 +11,7 @@
  *		Added documentation.			     HFB
  *  27.9.99  kill() should return ESRCH if process was not
  *              found.                                        HP 
+ *  09.3.03  Bug fix in wait(), statloc is in user space      HP
  */
 /*LINTLIBRARY*/
 
@@ -550,7 +551,8 @@ ok:
             if (p->p_status == P_ZOMBIE && p->p_pptr == udata.u_ptab)
             {
                 if (statloc)
-                    *statloc = p->p_exitval;
+                    uputw(p->p_exitval, statloc);
+
                 p->p_status = P_EMPTY;
                 retval = p->p_pid;
 

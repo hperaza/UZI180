@@ -28,6 +28,7 @@ extern struct drvTbl {
     unsigned char format;
     unsigned char spinup;
     unsigned char curtrk;
+    unsigned char ncyl;
 } dTbl[4];
 
 int secsiz [4] = {128, 256, 512, 1024};		/* Table of Sector Sizes */
@@ -57,6 +58,7 @@ int rawflag;
 {
     register unsigned nblocks;
     register unsigned firstblk;
+    register unsigned retc;
 
     if (rawflag)
     {
@@ -84,12 +86,21 @@ int rawflag;
     fsector = firstblk % dTbl[minor].spt;	/* Base 0 Sect # */
     ferror = 0;
 
+    if (ftrack >= dTbl[minor].ncyl)
+    {
+        udata.u_error = ENXIO;
+        return 1;
+    }
+
     for (;;)
     {
         if (rwflag)
-            fdread0(minor);
+            retc = fdread0(minor);
         else
-            fdwrite0(minor);
+            retc = fdwrite0(minor);
+
+        if (retc)
+            break;
 
         ifnot (--nblocks)
             break;
@@ -108,6 +119,13 @@ int rawflag;
                     rwflag ? "read" : "write", ferror, ftrack, fsector);
         panic ("");
     }
+
+    if (retc)
+    {
+        udata.u_error = ENXIO;
+        return 1;
+    }
+
     return (nblocks);
 }
 

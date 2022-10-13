@@ -1,2 +1,2 @@
-#define VERSION   "1.5.2"
-#define BUILDDATE "Sat Dec 7 22:47:52 CET 2002"
+#define VERSION   "1.6.2"
+#define BUILDDATE "Sun Feb 4 21:02:09 CET 2007"

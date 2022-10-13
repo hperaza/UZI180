@@ -5,6 +5,8 @@
 #
 ########################################################################
 
+VERSION = 1.6.2
+
 CSRCS = data.c \
 	devflop.c \
 	devhd.c \
@@ -46,7 +48,7 @@ emu.obj: emu.asz
 
 version.h:
 	@echo Creating $@...
-	@echo "#define VERSION   \"1.5.2\"" > version.h
+	@echo "#define VERSION   \"${VERSION}\"" > version.h
 	@echo "#define BUILDDATE \""`date`"\"" >> version.h
 	@echo ""
 

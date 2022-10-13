@@ -9,6 +9,7 @@
  *   19.12.97 - Split SCALL1.C for Hi-Tech compiler, modified for
  *		UZI180, added explanatory documentation.     HFB
  *   08.10.99 - Corrected a bug in _access()                 HP
+ *   31.01.04 - Corrected a minor bug in _mount()            HP
  */
 /*LINTLIBRARY*/
 
@@ -732,7 +733,8 @@ _mount()
 	goto nogood;
     }
 
-    if (fs_tab[dev].s_mounted || dino->c_refs != 1 || dino->c_num == ROOTINODE)
+    if (fs_tab[dev].s_mounted == SMOUNTED ||
+        dino->c_refs != 1 || dino->c_num == ROOTINODE)
     {
        udata.u_error = EBUSY;
        goto nogood;

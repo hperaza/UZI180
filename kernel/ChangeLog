@@ -1,3 +1,46 @@
+04-Feb-2007
+-----------
+
+  - up to 8 hard-disk partitions are now supported (to match fdisk).
+  - device table re-arranged.
+
+31-Jan-2004  (1.6.1)
+-----------
+
+  - added preliminary support for hard disk partition table.
+  - corrected a minor bug in _mount(): when trying to mount a valid
+    filesystem after an attempt to mount an invalid one on the same
+    device, the function would return an EBUSY error, when the operation
+    should be succesful. The problem was fs_tab[dev].s_mounted being
+    checked for non-zero, instead of testing it for SMOUNTED magic
+    number.
+
+24-Jan-2004  (1.5.3)
+-----------
+
+  - init2(): call fdInit() in order to initialize the floppy controller,
+    otherwise we might get an unexpected interrupt, causing the system to
+    panic (that happens, for example, when booting from a GIDE disk, and
+    then by just inserting a floppy).
+
+09-Mar-2003
+-----------
+
+  - bug fix in _wait(): statloc is in user space.
+  - added number of cylinders field to the floppy disk parameter table
+    (dTbl), since for some reason the FDC37C665 Seek command seems to
+    return success status *always*, even when seeking past the physical
+    end of the floppy (!).
+  - CP/M emu base moved (again) from E700 to E600. There was not enough
+    space for the environment.
+
+17-Dec-2002
+-----------
+
+kernel:
+  - added support for second serial port (/dev/tty2), output code
+    was there, but initialization and input code were missing.
+
 07-Dec-2002  (1.5.2)
 -----------
 
@@ -21,8 +64,8 @@ kernel:
     modified accordingly.
 
     Note that this change introduces incompatibilities with existing
-    UZI180 applications, but these can easily patched (a patching program
-    is provided).
+    UZI180 applications (are there any?), but these can easily patched.
+    A patching program (patchold.c) is provided.
 
 15-Jun-2001
 -----------
@@ -44,7 +87,7 @@ kernel:
 -----------
 
 kernel:
-  - the boot device number can be passed to the kernel in the CP/M
+  - the boot device number can now be passed to the kernel in the CP/M
     command line buffer in order to skip the boot prompt.
 
 15-May-2001

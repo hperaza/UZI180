@@ -7,6 +7,9 @@
 ****************************************************************/
 /* Revisions:
  *  09.10.99  Corrected a minor bug in clkint2()            HP
+ *  23.01.04  Call fdInit() in order to initialize the FDC  HP
+ *  31.01.04  Call wd_init() in order to read the partition
+ *            table                                         HP
  */
 
 #undef DEBUG                   /* Define to activate Debug Code */
@@ -18,7 +21,8 @@
 #include <version.h>
 
 extern char osBank;				/* defined in machasm */
-
+extern int  fdInit(int);			/* defined in flopasm */
+extern int  wd_init();                          /* defined in devhd.c */
 
 init2()
 {
@@ -59,6 +63,9 @@ init2()
     
     kprintf("%dkB total RAM, %dkB available to processes (%d processes max)\n",
             ramsize, procmem, maxproc);
+
+    fdInit(0);					/* this should reset the FDC */
+    wd_init();
 
     if (*cmdline) {
 

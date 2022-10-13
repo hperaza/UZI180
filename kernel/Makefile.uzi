@@ -1,0 +1,83 @@
+########################################################################
+#
+#  Use this Makefile to build the UZI180 kernel
+#  using HiTech's C compiler under UZI180.
+#
+########################################################################
+
+VERSION = 1.6.2
+
+CSRCS = data.c \
+	devflop.c \
+	devhd.c \
+	devio.c \
+	devmisc.c \
+	devtty.c \
+	filesys.c \
+	machdep.c \
+	process.c \
+	scall1a.c \
+	scall1b.c \
+	scall1c.c \
+	scall2.c \
+	start.c
+
+ASRCS =	flopasm.asz \
+	hdasm.asz \
+	machasm.asz \
+	procasm.asz \
+	utils.asz \
+	z180asm.asz
+
+COBJS = data.obj \
+	devflop.obj \
+	devhd.obj \
+	devio.obj \
+	devmisc.obj \
+	devtty.obj \
+	filesys.obj \
+	machdep.obj \
+	process.obj \
+	scall1a.obj \
+	scall1b.obj \
+	scall1c.obj \
+	scall2.obj \
+	start.obj
+
+AOBJS = flopasm.obj \
+	hdasm.obj \
+	machasm.obj \
+	procasm.obj \
+	utils.obj \
+	z180asm.obj
+
+OBJS = $(COBJS) $(AOBJS) emu.obj
+
+all:	uzi.com
+
+.SUFFIXES:		# delete the default suffixes
+.SUFFIXES: .c .asz .obj
+
+$(COBJS): $(CSRCS)
+	cc.com -o -c -v $<
+
+emu.obj: emu.asz
+	zas.com -n $<
+
+version.h:
+	@echo Creating $@...
+	@echo '#define VERSION   "'$(VERSION)'"' > version.h
+	@echo '#define BUILDDATE "Sun Feb 4 21:02:09 CET 2007"' >> version.h
+	@echo ""
+#	@echo "#define BUILDDATE \""`date`"\"" >> version.h
+#	@echo ""
+
+$(AOBJS): $(ASRCS)
+	zas.com -j -n $<
+
+uzi.com: version.h $(OBJS)
+	link.com '<' linkuzi
+
+clean:
+	rm -f $(OBJS)
+	rm -f uzi.com core *~ version.h *.\$$\$$\$$

@@ -162,6 +162,27 @@ _initsys:
 	IN0	A,(BBR)		; Get Current Bank
 	LD	(_osBank),A	;  Save for later kernel use
 
+; Initialize P112's second serial port (on FDC37C655 chip)
+
+	ld	hl,auxinz
+	ld	a,0FFh
+ic2:	ld	b,0		; MS address bits
+	ld	c,(hl)		; output port zero?
+	tst	c
+	jr	z,ic3		; yes, initialization complete
+	inc	hl		; point to data
+	outi			; send, alters B
+	jr	ic2
+
+auxinz:	defb	_LCR, 80h	; select divisor
+	defb	_DDL, 0Ch	; 9600 bps (60h [96d] = 1200 bps)
+	defb	_DLM, 0		; divisor MSB
+	defb	_LCR, 03h	; 8 bits, 1 stop, no parity
+	defb	_IER, 0		; no ints
+	defb	_MCR, 03h	; DTR, RTS active
+	defb	0		; end
+
+ic3:
 	jp	_fs_init	; ..chain to more setup in MACHDEP.C
 
 noSpace:
@@ -203,7 +224,7 @@ _ub:				; udata block padded up to 512 bytes (256 Wds)
 
 ; NOTE: The interrupt table must start on a 32-byte boundary
 
-itbl:			; INT0 - Uncomment Only one of these first two
+itbl:				; INT0 - Uncomment Only one of these first two
 ;;--	defw	_flopint	; INT0    - Floppy Controller Interrupt
 	defw	_badint		;;-- For Polled Floppy
 ;;--	defw	_scsint		; INT1    - SCSI Controller Interrupt
@@ -294,7 +315,8 @@ trap_sp:
 ;{
 ;    panic ("Bad Int");
 
-_badint: ld	hl,bimsg
+_badint:
+	ld	hl,bimsg
 	push	hl
 	call	_panic
 	ret			; ..should never get here
@@ -541,14 +563,25 @@ __cin:	IN0	A,(SCCACNT)	; Read Status Port
 	AND	01H		;  mask relevant bit
 	LD	L,A		;   (return C or Assy parms)
 	LD	H,A
-	RET	Z
+	JR	Z,cin2
 	IN0	A,(SCCAD)	; Get Byte that is ready
 	AND	7FH		; Mask off MSB
+	LD	BC,1		;  minor = 1
+	JR	cin3
+cin2:
+	IN0	A,(_LSR)	; Read Status Port
+	AND	01H		;  mask relevant bit
 	LD	L,A
-	LD	H,0		;  make into word
+	LD	H,A
+	RET	Z
+	IN0	A,(_RBR)	; Read input character
+	AND	7FH		; Mask off MSB
+	LD	BC,2		;  minor = 2
+cin3:
+	LD	L,A
+	LD	H,0		;  make char into word
 	PUSH	HL
-	LD	L,1		;    minor = 1
-	PUSH	HL
+	PUSH	BC		;  push minor number
 	CALL	_tty_inproc	;   massage character in C (devtty.c)
 	POP	BC		;    (clr stack on return)
 	POP	BC
