@@ -1,0 +1,16 @@
+r ulibc.lib \
+qsort.obj pnum.obj memchr.obj memcpy.obj memcmp.obj memset.obj \
+cseek.obj abs.obj asallsh.obj allsh.obj asalrsh.obj asar.obj \
+memmove.obj asdiv.obj asladd.obj asland.obj asll.obj asllrsh.obj \
+aslmul.obj aslor.obj aslsub.obj aslxor.obj asmod.obj \
+atoi.obj atol.obj bitfield.obj blkclr.obj blkcpy.obj calloc.obj \
+asmul.obj ctype_.obj getsp.obj index.obj strchr.obj \
+inout.obj iregset.obj isalpha.obj isdigit.obj \
+islower.obj isspace.obj isupper.obj ladd.obj land.obj \
+linc.obj llrsh.obj longjmp.obj lor.obj lrelop.obj frelop.obj \
+brelop.obj lsub.obj lxor.obj malloc.obj idiv.obj max.obj \
+ldiv.obj swap.obj aslr.obj bmove.obj imul.obj rand.obj \
+alrsh.obj lmul.obj rindex.obj strrchr.obj shar.obj shll.obj \
+shlr.obj strcat.obj strcmp.obj strcpy.obj strlen.obj strncat.obj \
+strncmp.obj strncpy.obj csv.obj rcsv.obj tolower.obj \
+toupper.obj wrelop.obj xtoi.obj
