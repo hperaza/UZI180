@@ -18,10 +18,12 @@ OBJS	= $(SRCS:.c=.obj)
 
 LIB	= uuni.lib
 
+all:	$(LIB)
+
 $(LIB):	$(OBJS)
-	-rm -f $(LIB)
+	-rm -f $@
 	$(LIBR) -"<" +mklib
-	$(LIBR) -s $(LIB) > uuni.map
+	$(LIBR) -s $@ > uuni.map
 
 clean:
 	rm -f $(LIB) *.obj *.map *~ core *.\$$\$$\$$
