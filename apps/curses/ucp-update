@@ -1,0 +1,4 @@
+cd root
+bget life
+chmod life 0755
+quit
