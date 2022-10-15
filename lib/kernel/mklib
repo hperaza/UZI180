@@ -1,9 +1,0 @@
-r ukrnl.lib \
-access.obj alarm.obj brk.obj chdir.obj chmod.obj chown.obj \
-close.obj creat.obj dup.obj dup2.obj execve.obj _exit.obj fork.obj \
-fstat.obj getegid.obj geteuid.obj getfsys.obj getgid.obj \
-getpid.obj getppid.obj getuid.obj ioctl.obj kill.obj link.obj \
-mknod.obj mount.obj open.obj pause.obj pipe.obj read.obj sbrk.obj \
-seek.obj setgid.obj setuid.obj signal.obj stat.obj stime.obj sync.obj \
-time.obj times.obj umask.obj umount.obj unlink.obj utime.obj wait.obj \
-write.obj kcall.obj
