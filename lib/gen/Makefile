@@ -43,10 +43,14 @@ OBJS	= memchr.obj memcpy.obj memmove.obj memcmp.obj memset.obj \
 	  strncpy.obj csv.obj rcsv.obj tolower.obj \
 	  toupper.obj xtoi.obj
 
-ulibc.lib:	$(OBJS)
-	-rm -f ulibc.lib
+LIB	= ulibc.lib
+
+all:	$(LIB)
+
+$(LIB):	$(OBJS)
+	-rm -f $@
 	$(LIBR) -"<" +mklib
-	$(LIBR) -s ulibc.lib > ulibc.map
+	$(LIBR) -s $@ > ulibc.map
 
 clean:
-	rm -f ulibc.lib *.obj *.map *~ core *.\$$\$$\$$
+	rm -f $(LIB) *.obj *.map *~ core *.\$$\$$\$$
