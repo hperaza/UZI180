@@ -30,10 +30,12 @@ SRCS	= access.as alarm.as brk.as chdir.as chmod.as chown.as close.as \
 
 LIB	= ukrnl.lib
 
+all:	$(LIB)
+
 $(LIB):	$(OBJS)
-	-rm -f $(LIB)
+	-rm -f $@
 	$(LIBR) -"<" +mklib
-	$(LIBR) -s $(LIB) > ukrnl.map
+	$(LIBR) -s $@ > ukrnl.map
 
 clean:
 	rm -f $(LIB) *.obj *.map *~ core *.\$$\$$\$$
