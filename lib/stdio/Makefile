@@ -32,12 +32,14 @@ SRCS	= fgetc.as fputc.as assert.c buf.c cgets.c stdclean.c \
 
 LIB	= ustdio.lib
 
-$(LIB):	$(OBJS)
-	-rm -f $(LIB)
-	$(LIBR) -"<" +mklib
-	$(LIBR) -s $(LIB) > ustdio.map
+all:	$(LIB)
 
-fgetc.obj:	fgetc.as
+$(LIB):	$(OBJS)
+	-rm -f $@
+	$(LIBR) -"<" +mklib
+	$(LIBR) -s $@ > ustdio.map
+
+fgetc.obj: fgetc.as
 
 clean:
 	rm -f $(LIB) *.obj *.map *~ core *.\$$\$$\$$
