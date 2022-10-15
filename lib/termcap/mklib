@@ -1,0 +1,2 @@
+r ulibtcap.lib \
+tgetflag.obj tgetnum.obj tgetstr.obj tgoto.obj tputs.obj tgetent.obj
