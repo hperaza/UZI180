@@ -1,0 +1,3 @@
+-Z -W3 -Ptext=0,data,bss -C100h -osh crt.obj sh.obj var.obj gmatch.obj \
+area.obj csyn.obj exec.obj do.obj eval.obj glob.obj here.obj io.obj \
+run.obj word.obj yylex.obj utils.obj uzilibc.lib

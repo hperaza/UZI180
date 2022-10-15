@@ -1,0 +1,55 @@
+Intro
+-----
+
+This directory contains the sources of msh, a mini-shell for UZI180.
+Currently msh implements the following features:
+
+- I/O redirection and pipes.
+- Background execution of processes.
+- Environment variable manipulations.
+- Wildcard expansion
+
+
+Command line options
+--------------------
+
+ -c  - temporary shell
+
+ -l  - login shell
+
+
+Builtin commands
+----------------
+
+cd  - change the current working directory to the one specified, or
+      to the user's home directory if none specified.
+
+exit - exit the shell. If a numeric argument follows, it will be used
+       as exit code.
+
+sync - sync disks (flush UZI180 internal cache)
+
+umask - print or set the current umask value
+
+
+I tried to keep the code size as small as possible without sacrificing
+too much functionality. That's why it looks kind of weird.
+
+The prompt shows the current working directory and a dollar sign '$'
+(a hash '#' if running with root privileges) as a prompt character.
+
+The command syntax closely follows the standard sh conventions:
+
+- spaces or tabs are used to separate the different command elements
+  (program names and arguments)
+
+- I/O redirection uses the following characters: '<' for stdin, '>' for
+  stdout, and the combination '>&' for stderr. A file or device name must
+  follow.
+
+- The vertical bar '|' is used to interconnect commands via pipes (i.e. to
+  send the stardard output from one program to the standard input of
+  another).
+
+- The ampersand '&' at the end of a command starts the corresponding program
+  in the background.

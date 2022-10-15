@@ -1,0 +1,5 @@
+cd /bin
+bget msh
+chmod msh 0755
+ls
+quit
