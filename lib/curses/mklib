@@ -1,0 +1,9 @@
+r ulibcurs.lib \
+beep.obj flash.obj charpick.obj endwin.obj \
+initscr.obj longname.obj mvcursor.obj newwin.obj options.obj \
+overlay.obj prntscan.obj scrreg.obj tabsize.obj termmisc.obj \
+unctrl.obj winsch.obj waddstr.obj wbox.obj wclear.obj wclr2bot.obj \
+wclr2eol.obj wdelch.obj wdelln.obj werase.obj wgetstr.obj wgetch.obj \
+windel.obj winmove.obj waddch.obj winscrol.obj winsln.obj wintouch.obj \
+move.obj refresh.obj update.obj setterm.obj cursset.obj cursesio.obj \
+termcap.obj
