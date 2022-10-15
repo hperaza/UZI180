@@ -26,7 +26,7 @@ find:	$(OBJS)
 	@echo "-Z -W3 -Ptext=0,data,bss -C100h -o"$@" \\" > linkfind
 	@echo "crt.obj "$(OBJS)" \\" >> linkfind
 	@echo "uzilibc.lib" >> linkfind
-	zxlink <linkfind
+	zxcc link -"<" +linkfind
 
 clean:
 	rm -f find linkfind $(OBJS) *.bak core *~ *.\$$\$$\$$
