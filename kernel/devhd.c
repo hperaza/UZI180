@@ -92,8 +92,10 @@ int rawflag;
     busid = 1;
     cmdblk[5] = 0;       /* Clear Flags */
 #ifdef GIDE
+#ifndef USE_PTABLE
     hdspt = HD_Sector;           /* Set physical drive params if IDE */
     hdhds = HD_Heads;
+#endif
 #endif
     if (rawflag)
     {
