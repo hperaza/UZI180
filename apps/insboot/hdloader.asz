@@ -1,7 +1,7 @@
 ; Boot loader for P112 UZI180 GIDE hard disks.
 ; This is the secondary loader that resides on the boot block
 ; of the partition.
-; Copyright (C) 2004, Hector Peraza
+; Copyright (C) 2004-2022, Hector Peraza
 
 	psect	text
 
@@ -17,7 +17,28 @@ boot:
 	defw	ldr - boot + datofs
 	defw	ldr - boot + hddat
 
-b1:	ld	hl,ldr
+b1:	ld	hl,ldr+hddat	; copy parameters from primary loader
+	ld	a,(ix+0)	; cylinders
+	ld	(hl),a
+	inc	hl
+	ld	a,(ix+1)
+	ld	(hl),a
+	inc	hl
+	ld	a,(ix+2)	; heads
+	ld	(hl),a
+	inc	hl
+	ld	a,(ix+3)	; sectors
+	ld	(hl),a
+	inc	hl
+	ld	a,(iy+0)	; partition start
+	ld	(hl),a
+	inc	hl
+	ld	a,(iy+1)
+	ld	(hl),a
+;;	ld	a,c		; partition number
+;;	ld	(ldr+datofs),a
+
+	ld	hl,ldr
 	ld	de,himem
 	ld	bc,size
 	ldir			; copy loader to high memory
@@ -374,7 +395,7 @@ datofs	equ	$ - loader
 bdev:	defb	0
 kmap:	defs	96*2		; space for the kernel block map
 
-	defb	0
+;;	defb	0
 
 size	equ	$ - loader
 
